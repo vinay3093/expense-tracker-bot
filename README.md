@@ -6,9 +6,9 @@ manually — one row per day, one column per category, daily totals on the right
 column totals at the bottom. The same bot also answers retrieval questions
 ("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
 
-> **Status:** Step 2 + 2.5 of 9 complete — provider-agnostic LLM client
-> is in, plus a chat-history & LLM-call tracing layer.
-> No Google Sheets wiring yet.
+> **Status:** Step 3 of 9 complete — chat text now turns into typed
+> `ExpenseEntry` / `RetrievalQuery` payloads, with full conversation
+> logging. No Google Sheets wiring yet (that's Step 4).
 
 ## Why this exists
 
@@ -145,6 +145,93 @@ application changes. **Today's choice doesn't paint us into a corner.**
 Trace failures **never** break the user's chat — the wrapper logs a
 warning and returns the LLM response unchanged.
 
+## Extractor pipeline (Step 3)
+
+The extractor turns one chat message into one typed action. Two LLM
+calls per turn, each with a tightly-scoped prompt:
+
+```
+                                                ┌──────────────────────────┐
+                          ┌── log_expense ────► │  ExpenseExtractor        │ ─► ExpenseEntry
+                          │                     │  (stage-2a, JSON mode)   │
+        ┌────────────────┴┐                    └──────────────────────────┘
+text ─► │ IntentClassifier │── query_*  ──────► ┌──────────────────────────┐
+        │  (stage-1, JSON) │                    │  RetrievalExtractor      │ ─► RetrievalQuery
+        └────────────────┬┘                    │  (stage-2b, JSON mode)   │
+                          │                     └──────────────────────────┘
+                          └── smalltalk / unclear ─► (no stage-2 call) ─► ExtractionResult
+```
+
+### Why two stages, not one
+
+A small free model (llama-3.1-8b on Groq) is much more reliable on
+two narrow prompts than one wide one. Each stage-2 prompt only sees
+the schema relevant to *its* intent, with the user's local TODAY,
+default currency, and full canonical-category list embedded. The
+classifier's only job is picking the right schema.
+
+### Intents
+
+| Intent | Means | Stage 2 schema |
+|---|---|---|
+| `log_expense` | "spent 40 on food", "dropped 12 on coffee" | `ExpenseEntry` |
+| `query_period_total` | "total this month", "how much in April" | `RetrievalQuery` |
+| `query_category_total` | "how much for food in April" | `RetrievalQuery` |
+| `query_day` | "what did I spend on 24 Apr" | `RetrievalQuery` |
+| `query_recent` | "show last 5 transactions" | `RetrievalQuery` |
+| `smalltalk` | "thanks", "hi" | — |
+| `unclear` | bot couldn't tell | — |
+
+### Categories — driven by YAML
+
+`expense_tracker/extractor/data/categories.yaml` is the canonical
+taxonomy. Each category has a display name, a one-line hint sent to
+the LLM, and a list of aliases that resolve to it. Examples:
+
+```yaml
+- name: Coffee
+  hint: coffee, tea, snacks at cafes
+  aliases: [coffee, cafe, starbucks, latte, chai]
+
+- name: Transport
+  hint: taxi, fuel, public transit
+  aliases: [uber, ola, metro, bus, fuel, gas, parking]
+```
+
+The bot tells the LLM the canonical names, but if the model emits an
+alias anyway (or the wrong case) the `CategoryRegistry` collapses it
+back to canonical. Step 4 will replace this YAML with one generated
+from your real Sheet column headers.
+
+### Time anchoring (the only tricky bit)
+
+Relative phrases like "today" / "yesterday" / "last week" need *your*
+clock, not the server's. The orchestrator reads `TIMEZONE` from the
+config (default `UTC` — set it to `America/Chicago` or whatever you
+actually live in) and passes today's date into every stage-2 prompt
+as an explicit anchor. Tests inject a frozen `now` callable so they
+pass on any machine.
+
+### What gets persisted
+
+Every call to `Orchestrator.extract` writes:
+
+* **One `ConversationTurn`** to `logs/conversations.jsonl` — the user
+  text, classified intent, extracted payload, and `trace_ids` linking
+  back to the per-stage LLM call records.
+* **One `LLMCallRecord` per stage** to `logs/llm_calls.jsonl` — same
+  shape as Step 2.5. All records from one turn share a `session_id`,
+  so `jq 'select(.session_id == "x_abc123")'` reconstructs the full
+  pipeline.
+
+### Try it
+
+```bash
+python -m expense_tracker --extract "spent 40 on coffee yesterday"
+python -m expense_tracker --extract "how much did I spend on food in April"
+python -m expense_tracker --extract "thanks!"
+```
+
 ## Repository layout
 
 ```
@@ -169,10 +256,19 @@ expense-tracker-bot/
 │       │   ├── ollama_client.py
 │       │   ├── openai_client.py     (lazy SDK)
 │       │   └── anthropic_client.py  (lazy SDK)
-│       └── storage/             # chat / trace history (Step 2.5)
-│           ├── base.py            ← ChatStore Protocol + record dataclasses
-│           ├── jsonl_store.py     ← JSONL impl with locking + schema versioning
-│           └── factory.py         ← get_chat_store()
+│       ├── storage/             # chat / trace history (Step 2.5)
+│       │   ├── base.py            ← ChatStore Protocol + record dataclasses
+│       │   ├── jsonl_store.py     ← JSONL impl with locking + schema versioning
+│       │   └── factory.py         ← get_chat_store()
+│       └── extractor/           # chat → typed action (Step 3)
+│           ├── schemas.py         ← Intent enum + ExpenseEntry + RetrievalQuery + ExtractionResult
+│           ├── categories.py      ← CategoryRegistry (alias → canonical)
+│           ├── prompts.py         ← all prompt templates, one place
+│           ├── intent_classifier.py
+│           ├── expense_extractor.py
+│           ├── retrieval_extractor.py
+│           ├── orchestrator.py    ← public entry point
+│           └── data/categories.yaml
 └── tests/
     ├── conftest.py              # isolated_env, fake_llm fixtures
     ├── test_config.py
@@ -180,21 +276,27 @@ expense-tracker-bot/
     ├── test_llm_fake.py
     ├── test_llm_json_repair.py
     ├── test_llm_traced.py       # tracing wrapper + factory auto-wrap
-    └── test_storage_jsonl.py    # JSONL store + concurrency + filters
+    ├── test_storage_jsonl.py    # JSONL store + concurrency + filters
+    ├── test_extractor_schemas.py
+    ├── test_categories.py
+    ├── test_intent_classifier.py
+    ├── test_expense_extractor.py
+    ├── test_retrieval_extractor.py
+    └── test_orchestrator.py     # full two-stage pipeline + session-id linking
 ```
 
 ## Roadmap (one commit per step)
 
 1. Scaffold — empty package, build config, gitignore. **(done)**
 2. **LLM client** — provider-agnostic protocol, Groq/Ollama/OpenAI/Anthropic backends, retries, JSON mode, fake for tests. **(done)**
-2.5. **Chat history & tracing** — `ChatStore` protocol, JSONL impl, transparent tracing wrapper around any LLM client. **(done — this commit)**
-3. Expense extractor — Pydantic schema + extraction prompt + tests with synthetic chats. Writes one `ConversationTurn` per user message.
+2.5. **Chat history & tracing** — `ChatStore` protocol, JSONL impl, transparent tracing wrapper around any LLM client. **(done)**
+3. **Extractor** — Intent classification + schema-specific extraction (`ExpenseEntry` / `RetrievalQuery`), category registry, conversation-turn logging. **(done — this commit)**
 4. Sheets foundation — service account, open spreadsheet, `sheet_format.yaml`-driven month creation.
 5. Sheets writer — `gspread` integration that mirrors my existing monthly layout.
 6. CLI — `expense add "spent 40 on food"` end-to-end.
-7. Retrieval extractor — same extractor pattern but for query intents.
-8. Sheets reader + aggregator — answers "how much did I spend on food in April?".
-9. Telegram bot — wraps the CLI in a chat front-end.
+7. Sheets reader + aggregator — answers "how much did I spend on food in April?".
+8. Telegram bot — wraps the CLI in a chat front-end.
+9. Polish — `--undo`, multi-turn clarification, weekly summaries.
 
 ## Running it
 
@@ -218,6 +320,9 @@ python -m expense_tracker --ping-llm
 
 # Structured JSON completion (validates against a tiny Pydantic schema):
 python -m expense_tracker --ping-llm --json
+
+# Run the full extractor pipeline on one message:
+python -m expense_tracker --extract "spent 40 on coffee yesterday"
 ```
 
 Expected output (Groq, with tracing on):

@@ -17,6 +17,7 @@ import os
 import pytest
 
 from expense_tracker.config import reset_settings_cache_for_tests
+from expense_tracker.extractor.categories import reset_registry_cache_for_tests
 from expense_tracker.llm._fake import FakeLLMClient
 
 _PROJECT_ENV_VARS = (
@@ -36,6 +37,9 @@ _PROJECT_ENV_VARS = (
     "LLM_TRACE",
     "LOG_DIR",
     "CHAT_STORE_BACKEND",
+    "TIMEZONE",
+    "DEFAULT_CURRENCY",
+    "EXTRACTOR_CATEGORIES_FILE",
 )
 
 
@@ -50,14 +54,17 @@ def isolated_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
     reset_settings_cache_for_tests()
+    reset_registry_cache_for_tests()
 
     def _set(**kv: str) -> None:
         for k, v in kv.items():
             monkeypatch.setenv(k, v)
         reset_settings_cache_for_tests()
+        reset_registry_cache_for_tests()
 
     yield _set
     reset_settings_cache_for_tests()
+    reset_registry_cache_for_tests()
 
 
 @pytest.fixture

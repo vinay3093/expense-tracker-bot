@@ -1,0 +1,77 @@
+# Default category taxonomy for the expense tracker.
+#
+# Each entry has:
+#   name      ← canonical display name (this is what lands in the Sheet
+#               column header)
+#   aliases   ← lowercase phrases that should map to this canonical name.
+#               Useful when the LLM emits a synonym we'd rather normalise.
+#   hint      ← optional one-line description sent to the LLM as context
+#               so it can disambiguate. Keep these short — they're tokens.
+#
+# Step 4 will replace this file with one generated from the user's actual
+# Google-Sheet column headers, so add aliases for whatever phrasing you
+# typically use in chat.
+
+schema_version: 1
+
+categories:
+  - name: Food
+    hint: groceries, supermarket, fruit & veg
+    aliases: [food, groceries, groc, supermarket, fruits, veg, vegetables, kirana]
+
+  - name: Restaurants
+    hint: eating out, takeout, food delivery
+    aliases:
+      [restaurant, restaurants, dining, eatout, lunch, dinner, breakfast,
+       brunch, takeout, takeaway, swiggy, zomato, doordash, ubereats]
+
+  - name: Coffee
+    hint: coffee, tea, snacks at cafes
+    aliases: [coffee, cafe, starbucks, latte, cappuccino, espresso, tea, chai]
+
+  - name: Transport
+    hint: taxi, fuel, public transit
+    aliases:
+      [transport, transportation, taxi, uber, ola, lyft, cab, metro, bus,
+       train, fuel, gas, petrol, diesel, parking, toll]
+
+  - name: Shopping
+    hint: clothes, electronics, online orders
+    aliases:
+      [shopping, clothes, clothing, electronics, amazon, flipkart, online,
+       shoes, accessories]
+
+  - name: Bills
+    hint: rent, utilities, subscriptions
+    aliases:
+      [bills, bill, rent, electric, electricity, water, internet, phone,
+       mobile, broadband, subscription, netflix, spotify]
+
+  - name: Health
+    hint: doctor, pharmacy, gym
+    aliases:
+      [health, medical, doctor, doctors, medicine, pharmacy, hospital,
+       clinic, dental, gym, fitness]
+
+  - name: Entertainment
+    hint: movies, streaming, events, games
+    aliases:
+      [entertainment, movie, movies, cinema, concert, event, game, gaming,
+       book, books]
+
+  - name: Travel
+    hint: flights, hotels, vacations
+    aliases: [travel, trip, vacation, flight, flights, hotel, hotels, airbnb]
+
+  - name: Personal Care
+    hint: haircut, salon, toiletries
+    aliases:
+      [personal care, haircut, salon, spa, barber, toiletries, cosmetics]
+
+  - name: Gifts
+    hint: gifts, donations
+    aliases: [gift, gifts, donation, donations, charity, present]
+
+  - name: Other
+    hint: anything that doesn't fit the buckets above
+    aliases: [other, misc, miscellaneous, uncategorised, uncategorized]

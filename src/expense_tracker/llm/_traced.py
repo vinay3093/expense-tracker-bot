@@ -113,6 +113,10 @@ class TracedLLMClient:
         schema_name: str | None,
     ) -> None:
         rec = LLMCallRecord(
+            # Use the response's request_id as the trace_id so callers
+            # who hold an LLMResponse can correlate it back to the
+            # persisted record without scanning the file.
+            trace_id=resp.request_id,
             session_id=self._session_id,
             provider=resp.provider,
             model=resp.model,
@@ -127,6 +131,18 @@ class TracedLLMClient:
             outcome="ok",
         )
         self._safe_append(rec)
+
+    def with_session(self, session_id: str) -> TracedLLMClient:
+        """Return a sibling tracer that stamps ``session_id`` on every record.
+
+        Lets a caller (e.g. the extractor orchestrator) group all LLM
+        calls produced by one user turn behind a single id, so
+        ``iter_llm_calls`` filters cleanly and ConversationTurn rows can
+        cross-link via their ``trace_ids`` list.
+        """
+        return TracedLLMClient(
+            inner=self._inner, store=self._store, session_id=session_id
+        )
 
     def _record_error(
         self,

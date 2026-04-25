@@ -90,6 +90,33 @@ class Settings(BaseSettings):
         description="Soft cap for completion length. Plenty for our extraction outputs.",
     )
 
+    # ─── Locale (drives date parsing & currency defaults) ───────────────
+    TIMEZONE: str = Field(
+        default="UTC",
+        description=(
+            "IANA timezone name (e.g. 'America/Chicago', 'Asia/Kolkata'). "
+            "Used to resolve relative phrases like 'today' / 'yesterday' / "
+            "'last week' from the user's perspective, not the server's. "
+            "Defaults to UTC for deterministic tests; override in .env."
+        ),
+    )
+    DEFAULT_CURRENCY: str = Field(
+        default="INR",
+        description=(
+            "ISO-4217 currency assumed when the user doesn't specify one. "
+            "Override per-message wins (e.g. '$40' or '40 USD')."
+        ),
+    )
+    EXTRACTOR_CATEGORIES_FILE: str | None = Field(
+        default=None,
+        description=(
+            "Optional path to a YAML file listing your expense categories + "
+            "aliases. When unset, the bundled default lives in "
+            "expense_tracker/extractor/data/categories.yaml. "
+            "Step 4 will plug your real Google-Sheet column headers in here."
+        ),
+    )
+
     # ─── Storage / observability ────────────────────────────────────────
     LLM_TRACE: bool = Field(
         default=True,

@@ -12,6 +12,10 @@ Available commands:
 * ``python -m expense_tracker --ping-llm --json``  Same, but force JSON
   mode and validate the result against a tiny Pydantic schema. Best way
   to verify structured-output reliability of the model you picked.
+* ``python -m expense_tracker --extract "spent 40 on coffee yesterday"``
+  Run the full extractor pipeline (intent classification + schema-
+  specific extraction) and print the resulting :class:`ExtractionResult`.
+  Best way to feel out how the bot will read your phrasing.
 """
 
 from __future__ import annotations
@@ -56,6 +60,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="With --ping-llm: force JSON mode and validate the response.",
+    )
+    p.add_argument(
+        "--extract",
+        metavar="TEXT",
+        help=(
+            "Run the full extractor pipeline on TEXT and print the "
+            "structured ExtractionResult. Useful for prompt-tuning."
+        ),
     )
     return p
 
@@ -121,14 +133,67 @@ def _cmd_ping_llm(json_mode: bool) -> int:
     return 0
 
 
+def _cmd_extract(text: str) -> int:
+    """Run the extractor pipeline on a single message and pretty-print."""
+    cfg = get_settings()
+    print(f"Provider : {cfg.LLM_PROVIDER}")
+    print(f"Timezone : {cfg.TIMEZONE}")
+    print(f"Currency : {cfg.DEFAULT_CURRENCY}")
+
+    try:
+        from .extractor import Orchestrator
+
+        orch = Orchestrator.from_settings(cfg)
+    except LLMError as exc:
+        print(f"\n[config error] {exc}", file=sys.stderr)
+        return 2
+
+    if cfg.LLM_TRACE:
+        from .storage import get_chat_store
+        from .storage.jsonl_store import JsonlChatStore
+
+        store = get_chat_store(cfg)
+        if isinstance(store, JsonlChatStore):
+            print(f"Traces   : {store.llm_calls_path}")
+            print(f"Turns    : {store.conversations_path}")
+
+    print(f"\nMessage  : {text!r}\nExtracting...\n")
+
+    try:
+        result = orch.extract(text)
+    except LLMError as exc:
+        print(f"\n[llm error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Intent     : {result.intent.value}  (confidence={result.confidence:.2f})")
+    print(f"Reasoning  : {result.reasoning}")
+    print(f"Session    : {result.session_id}")
+    print(f"Trace IDs  : {result.trace_ids}")
+
+    if result.expense is not None:
+        print("\nExpense:")
+        print(result.expense.model_dump_json(indent=2))
+    elif result.query is not None:
+        print("\nQuery:")
+        print(result.query.model_dump_json(indent=2))
+    elif result.error is not None:
+        print(f"\nError      : {result.error}")
+    else:
+        print("\n(no actionable payload — smalltalk or unclear)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     args = _build_parser().parse_args(argv)
 
     if args.ping_llm:
         sys.exit(_cmd_ping_llm(json_mode=args.json))
+    if args.extract is not None:
+        sys.exit(_cmd_extract(args.extract))
 
     print(f"expense_tracker scaffold OK (v{__version__})")
     print("Try: `python -m expense_tracker --ping-llm` to test your LLM config.")
+    print('  or: `python -m expense_tracker --extract "spent 40 on coffee"`.')
     sys.exit(0)
 
 
