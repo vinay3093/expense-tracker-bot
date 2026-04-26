@@ -144,6 +144,9 @@ class SheetsBackend(Protocol):
 
 _A1_CELL_RE = re.compile(r"^([A-Z]+)(\d+)$")
 _A1_RANGE_RE = re.compile(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$")
+# Open-ended range like "A2:M" — start row pinned, end row implicit.
+# Maps to "row 2 to the end of the sheet" in Google Sheets semantics.
+_A1_OPEN_RANGE_RE = re.compile(r"^([A-Z]+)(\d+):([A-Z]+)$")
 
 
 def col_letter_to_index(letter: str) -> int:
@@ -179,9 +182,19 @@ def parse_a1_cell(addr: str) -> tuple[int, int]:
 
 
 def parse_a1_range(range_a1: str) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Return ((r1, c1), (r2, c2)) inclusive, 0-based.
+    """Return ``((r1, c1), (r2, c2))`` inclusive, 0-based.
 
-    Single-cell ranges like ``"A1"`` map to the same start and end.
+    Accepted shapes:
+
+    * Single cell: ``"A1"`` → ``((0, 0), (0, 0))``.
+    * Closed range: ``"A1:B5"`` → ``((0, 0), (4, 1))``.
+    * Open-ended range: ``"A2:M"`` (no end row) → ``((1, 0), (-1, 12))``.
+      Callers that care about the end row check for ``r2 == -1`` and
+      substitute the worksheet's current ``row_count`` (this is what
+      Google Sheets does when you write ``A2:M`` in the UI).
+
+    Raises:
+        ValueError: anything that doesn't match one of the three shapes.
     """
     s = range_a1.strip()
     if "!" in s:
@@ -193,6 +206,12 @@ def parse_a1_range(range_a1: str) -> tuple[tuple[int, int], tuple[int, int]]:
         c2 = col_letter_to_index(m.group(3))
         r2 = int(m.group(4)) - 1
         return (r1, c1), (r2, c2)
+    m_open = _A1_OPEN_RANGE_RE.match(s)
+    if m_open:
+        c1 = col_letter_to_index(m_open.group(1))
+        r1 = int(m_open.group(2)) - 1
+        c2 = col_letter_to_index(m_open.group(3))
+        return (r1, c1), (-1, c2)
     # Try single cell.
     rc = parse_a1_cell(s)
     return rc, rc

@@ -1,14 +1,17 @@
 """CLI entry point — ``python -m expense_tracker`` / ``expense ...``.
 
-Two flavours of commands live here:
+Three flavours of commands live here:
 
 * **LLM diagnostics** (Steps 1-3): ``--ping-llm``, ``--extract``.
 * **Sheets tools** (Step 4): ``--whoami``, ``--list-sheets``,
   ``--init-transactions``, ``--build-month``, ``--rebuild-month``,
   ``--build-ytd``, ``--rebuild-ytd``, ``--setup-year``.
+* **Chat pipeline** (Step 5): ``--chat`` — one full turn, end to end.
+  Classifies intent, extracts the typed payload, writes the row to the
+  spreadsheet (when intent=log_expense), and prints the bot's reply.
 
-All Sheets commands honour ``--fake`` for offline experimentation —
-the layout runs end-to-end against an in-memory backend so you can
+All Sheets / chat commands honour ``--fake`` for offline experimentation
+— the layout runs end-to-end against an in-memory backend so you can
 preview behaviour without touching your real spreadsheet.
 """
 
@@ -133,6 +136,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--hide-previous",
         action="store_true",
         help="With --setup-year: hide all monthly tabs from the previous year.",
+    )
+
+    # ─── Chat pipeline ─────────────────────────────────────────────────
+    g_chat = p.add_argument_group(
+        "Chat",
+        description=(
+            "Drive one full conversation turn end-to-end: classify, "
+            "extract, write to Sheets (if log_expense), reply. "
+            "Add --fake to log into the in-memory backend instead of "
+            "your real spreadsheet."
+        ),
+    )
+    g_chat.add_argument(
+        "--chat",
+        metavar="TEXT",
+        help=(
+            "Run TEXT through the full chat pipeline and print the bot's "
+            "reply along with a structured trace."
+        ),
     )
 
     return p
@@ -415,6 +437,68 @@ def _cmd_build_ytd(value: str, *, fake: bool, overwrite: bool) -> int:
     return 0
 
 
+def _cmd_chat(text: str, *, fake: bool) -> int:
+    """Drive one full chat turn end-to-end and pretty-print the result."""
+    from .pipeline import get_chat_pipeline
+    from .sheets import SheetsError
+
+    cfg = get_settings()
+    print(f"Provider : {cfg.LLM_PROVIDER}")
+    print(f"Timezone : {cfg.TIMEZONE}")
+    print(f"Currency : {cfg.DEFAULT_CURRENCY}")
+    print(f"Backend  : {'fake' if fake else 'gspread'}")
+
+    if cfg.LLM_TRACE:
+        from .storage import get_chat_store
+        from .storage.jsonl_store import JsonlChatStore
+
+        store = get_chat_store(cfg)
+        if isinstance(store, JsonlChatStore):
+            print(f"Traces   : {store.llm_calls_path}")
+            print(f"Turns    : {store.conversations_path}")
+
+    print(f"\nMessage  : {text!r}\nThinking...\n")
+
+    try:
+        pipeline = get_chat_pipeline(cfg, fake=fake)
+    except (LLMError, SheetsError) as exc:
+        print(f"\n[config error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        turn = pipeline.chat(text)
+    except LLMError as exc:
+        print(f"\n[llm error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Intent     : {turn.intent.value}")
+    print(f"Session    : {turn.session_id}")
+    print(f"Trace IDs  : {turn.trace_ids}")
+    print(f"OK         : {turn.ok}")
+
+    if turn.log_result is not None:
+        lr = turn.log_result
+        print("\nWrote to Sheets:")
+        print(f"  Tab        : {lr.transactions_tab}")
+        print(f"  Monthly    : {lr.monthly_tab}"
+              f"{'  (newly created)' if lr.monthly_tab_created else ''}")
+        print(f"  Category   : {lr.row.category}")
+        print(f"  Amount     : {lr.row.amount} {lr.row.currency} -> "
+              f"${lr.row.amount_usd:,.2f} USD")
+        print(f"  FX         : rate={lr.row.fx_rate} src={lr.fx_source}")
+    elif turn.log_error is not None:
+        print(f"\nLog error  : {turn.log_error}")
+    elif turn.extraction.expense is not None:
+        print("\nExpense (not written):")
+        print(turn.extraction.expense.model_dump_json(indent=2))
+    elif turn.extraction.query is not None:
+        print("\nQuery:")
+        print(turn.extraction.query.model_dump_json(indent=2))
+
+    print(f"\nBot reply  : {turn.bot_reply}")
+    return 0 if turn.ok else 4
+
+
 def _cmd_setup_year(
     value: str, *, fake: bool, overwrite: bool, hide_previous: bool,
 ) -> int:
@@ -497,13 +581,18 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
             hide_previous=args.hide_previous,
         ))
 
+    # Chat pipeline.
+    if args.chat is not None:
+        sys.exit(_cmd_chat(args.chat, fake=args.fake))
+
     print(f"expense_tracker scaffold OK (v{__version__})")
     print("LLM   : --ping-llm | --extract \"…\"")
     print("Sheets: --whoami | --list-sheets | --init-transactions")
     print("        --build-month YYYY-MM | --rebuild-month YYYY-MM")
     print("        --build-ytd YYYY      | --rebuild-ytd YYYY")
     print("        --setup-year YYYY [--overwrite] [--hide-previous]")
-    print("Add --fake to any Sheets command to run offline.")
+    print("Chat  : --chat \"spent 40 on coffee yesterday\"")
+    print("Add --fake to any Sheets / chat command to run offline.")
     sys.exit(0)
 
 

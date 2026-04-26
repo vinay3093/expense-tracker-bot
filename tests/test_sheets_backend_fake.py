@@ -72,6 +72,16 @@ def test_parse_a1_range_single_cell():
     assert parse_a1_range("D5") == ((4, 3), (4, 3))
 
 
+def test_parse_a1_range_open_ended():
+    # "A2:M" means "row 2 to the end of the sheet, columns A through M".
+    # parse_a1_range returns r2=-1 to signal "use the worksheet's own
+    # row_count". The Transactions tab's month-band conditional format
+    # uses exactly this shape; without it the gspread backend crashes
+    # on the very first row write.
+    assert parse_a1_range("A2:M") == ((1, 0), (-1, 12))
+    assert parse_a1_range("Sheet1!H2:H") == ((1, 7), (-1, 7))
+
+
 # ─── Worksheet CRUD ────────────────────────────────────────────────────
 
 def test_create_and_list_worksheets():

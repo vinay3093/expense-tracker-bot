@@ -6,11 +6,13 @@ manually — one row per day, one column per category, daily totals on the right
 column totals at the bottom. The same bot also answers retrieval questions
 ("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
 
-> **Status:** Step 4 of 9 complete — Google Sheets is wired. The bot can
-> open your spreadsheet, build the master `Transactions` ledger, build any
-> monthly tab (live formulas, daily grid, per-category breakdown), and
-> build a `YTD <year>` dashboard. Multi-currency conversion (INR → USD via
-> Frankfurter.app) is in. The chat → row write path lands in Step 5.
+> **Status:** Step 5 of 9 complete — chat → row writer is live. Type
+> `expense --chat "spent 12.50 on coffee at starbucks today"` and one
+> row lands in the master `Transactions` ledger; the right monthly tab
+> is auto-created if it's the first transaction of the month; foreign
+> currencies (e.g. INR) are converted to USD on the way in. The same
+> command also handles smalltalk and parses retrieval questions
+> (answering them lands in Step 6).
 
 ## Why this exists
 
@@ -358,6 +360,53 @@ python -m expense_tracker --setup-year 2027 --hide-previous   # tucks 2026 month
 python -m expense_tracker --setup-year 2027 --fake
 ```
 
+## Chat → row writer (Step 5)
+
+Step 5 closes the loop: a chat message becomes a typed `ExpenseEntry`,
+the FX layer converts it to USD, the right monthly tab is auto-created
+if needed, and one row lands in the master `Transactions` ledger — all
+through a single CLI command.
+
+```bash
+# Real spreadsheet
+expense --chat "spent 12.50 on coffee at starbucks today"
+
+# Multi-currency — INR auto-converts to USD via Frankfurter.app
+expense --chat "paid 499 RS for netflix"
+
+# Smalltalk and retrieval intents are classified too (retrieval lands in Step 6)
+expense --chat "thanks!"
+expense --chat "how much did I spend on food in april?"
+
+# Try any of the above offline (in-memory backend, no network)
+expense --chat "spent 8 on lunch on may 3" --fake
+```
+
+What happens under the hood:
+
+1. **Extractor** (Step 3) classifies the intent and — for
+   `log_expense` — extracts an `ExpenseEntry`.
+2. **`ExpenseLogger`** (`pipeline/logger.py`) converts the amount to
+   USD, ensures the `Transactions` tab exists, ensures the monthly
+   summary tab for the entry's date exists, builds a `TransactionRow`,
+   and appends it.
+3. **`format_reply`** (`pipeline/reply.py`) produces a short, friendly
+   confirmation that the CLI prints back. The same string is what the
+   Telegram bot will send back in Step 7.
+4. **`Orchestrator.persist_turn`** writes one fully-resolved
+   `ConversationTurn` to `logs/conversations.jsonl` — including the
+   action outcome and the bot's reply, so every chat is auditable.
+
+Failure isolation:
+
+* FX API down → falls back to the most recent cached rate; expense
+  still lands.
+* Sheets API hiccup → returns a friendly "couldn't write" reply, the
+  turn is still persisted with `action.status = "error"` for
+  follow-up.
+* LLM produces malformed JSON → graceful "couldn't parse" reply, no
+  partial write.
+
 ## Repository layout
 
 ```
@@ -395,18 +444,25 @@ expense-tracker-bot/
 │       │   ├── retrieval_extractor.py
 │       │   ├── orchestrator.py    ← public entry point
 │       │   └── data/categories.yaml
-│       └── sheets/              # Google Sheets layer (Step 4)
-│           ├── backend.py         ← SheetsBackend / WorksheetHandle Protocols + FakeSheetsBackend
-│           ├── format.py          ← Pydantic models for sheet_format.yaml
-│           ├── transactions.py    ← Transactions schema + init + append helpers
-│           ├── currency.py        ← Frankfurter.app FX with on-disk cache
-│           ├── month_builder.py   ← formula builders + build_month_tab()
-│           ├── ytd_builder.py     ← formula builders + build_ytd_tab()
-│           ├── year_builder.py    ← bulk setup_year() + ensure_*_tab()
-│           ├── gspread_backend.py ← real backend (lazy gspread import)
-│           ├── factory.py         ← get_sheets_backend()
-│           ├── exceptions.py      ← SheetsError hierarchy
-│           └── data/sheet_format.yaml
+│       ├── sheets/              # Google Sheets layer (Step 4)
+│       │   ├── backend.py         ← SheetsBackend / WorksheetHandle Protocols + FakeSheetsBackend
+│       │   ├── format.py          ← Pydantic models for sheet_format.yaml
+│       │   ├── transactions.py    ← Transactions schema + init + append helpers
+│       │   ├── currency.py        ← Frankfurter.app FX with on-disk cache
+│       │   ├── month_builder.py   ← formula builders + build_month_tab()
+│       │   ├── ytd_builder.py     ← formula builders + build_ytd_tab()
+│       │   ├── year_builder.py    ← bulk setup_year() + ensure_*_tab()
+│       │   ├── gspread_backend.py ← real backend (lazy gspread import)
+│       │   ├── factory.py         ← get_sheets_backend()
+│       │   ├── exceptions.py      ← SheetsError hierarchy
+│       │   └── data/sheet_format.yaml
+│       └── pipeline/             # chat → row writer (Step 5)
+│           ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append)
+│           ├── reply.py            ← format_reply() — pure user-facing reply builder
+│           ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
+│           ├── factory.py          ← get_chat_pipeline()
+│           ├── exceptions.py       ← PipelineError / ExpenseLogError / InconsistentExtraction
+│           └── __init__.py         ← public API
 └── tests/
     ├── conftest.py              # isolated_env, fake_llm fixtures
     ├── test_config.py
@@ -428,7 +484,10 @@ expense-tracker-bot/
     ├── test_sheets_ytd_builder.py      # YTDLayout + formulas + end-to-end builds
     ├── test_sheets_year_builder.py     # bulk setup + hide-previous + ensure_*
     ├── test_sheets_currency.py         # cache, identity, API path, stale fallback
-    └── test_sheets_factory.py          # config validation + fake/real selection
+    ├── test_sheets_factory.py          # config validation + fake/real selection
+    ├── test_pipeline_logger.py         # ExpenseLogger: FX, auto-vivify, alias resolve, errors
+    ├── test_pipeline_reply.py          # format_reply: every intent + log/error branches
+    └── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend)
 ```
 
 ## Roadmap (one commit per step)
@@ -437,8 +496,8 @@ expense-tracker-bot/
 2. **LLM client** — provider-agnostic protocol, Groq/Ollama/OpenAI/Anthropic backends, retries, JSON mode, fake for tests. **(done)**
 2.5. **Chat history & tracing** — `ChatStore` protocol, JSONL impl, transparent tracing wrapper around any LLM client. **(done)**
 3. **Extractor** — Intent classification + schema-specific extraction (`ExpenseEntry` / `RetrievalQuery`), category registry, conversation-turn logging. **(done)**
-4. **Sheets foundation** — service account auth, master `Transactions` ledger, formula-driven monthly + YTD tabs, multi-currency conversion, `--build-month / --setup-year` CLI. **(done — this commit)**
-5. Chat → row writer — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification.
+4. **Sheets foundation** — service account auth, master `Transactions` ledger, formula-driven monthly + YTD tabs, multi-currency conversion, `--build-month / --setup-year` CLI. **(done)**
+5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done — this commit)**
 6. Sheets reader + aggregator — answer retrieval queries by SUMIFS-equivalent reads.
 7. Telegram bot — wraps the CLI in a chat front-end.
 8. Polish — `--undo`, multi-turn clarification, weekly summaries.
