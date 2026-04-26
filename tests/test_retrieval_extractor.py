@@ -71,7 +71,7 @@ def test_extracts_category_total(fake_llm):
         today=TODAY,
     )
 
-    assert result.query.category == "Food"
+    assert result.query.category == "Groceries"
 
 
 def test_extracts_query_day(fake_llm):

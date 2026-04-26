@@ -138,6 +138,37 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── Google Sheets (Step 4) ─────────────────────────────────────────
+    GOOGLE_SERVICE_ACCOUNT_JSON: str | None = Field(
+        default=None,
+        description=(
+            "Path to the service-account JSON downloaded from Google Cloud "
+            "Console. Required for any Sheets operation. The file MUST stay "
+            "outside git (see .gitignore — secrets/ is ignored)."
+        ),
+    )
+    EXPENSE_SHEET_ID: str | None = Field(
+        default=None,
+        description=(
+            "The Google Sheets ID — the long token in the URL between "
+            "/spreadsheets/d/ and /edit. Required for any read/write."
+        ),
+    )
+    SHEET_FORMAT_FILE: str | None = Field(
+        default=None,
+        description=(
+            "Optional path to a YAML file that overrides the bundled sheet "
+            "format (expense_tracker/sheets/data/sheet_format.yaml). Generate "
+            "one with `expense --introspect-sheet \"<existing tab>\"` if you "
+            "want to mirror an existing month's layout exactly."
+        ),
+    )
+    SHEETS_TIMEOUT_S: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Per-request timeout for Google Sheets API calls.",
+    )
+
 
 # Module-level singleton so we don't re-parse env on every call.
 _settings_cache: Settings | None = None

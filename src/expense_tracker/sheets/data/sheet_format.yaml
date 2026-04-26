@@ -1,0 +1,99 @@
+# Sheet layout & styling preferences for the expense tracker.
+#
+# This file is the *visual* contract — colors, widths, freeze panes,
+# sheet-name patterns. The structural contract (which columns the
+# Transactions tab has, what regions a monthly tab is divided into,
+# what formulas live where) is in `sheets/transactions.py` and
+# `sheets/month_builder.py` — code, not config, because formula
+# correctness is unit-testable but YAML isn't.
+#
+# To override this file, set SHEET_FORMAT_FILE in .env to a path
+# pointing at your own copy.
+
+schema_version: 2
+
+# All monthly + YTD totals are denominated in this currency.
+# Transactions can be logged in any currency — the bot converts on
+# the way in (see sheets/currency.py) and stores BOTH the original
+# amount + the converted amount in the Transactions tab.
+primary_currency: USD
+
+# Optional: a secondary currency that the YTD tab also surfaces
+# (helpful when you straddle two currencies). Set to null to disable.
+secondary_currency: INR
+
+# ─── Transactions tab — the master ledger ───────────────────────────────
+transactions:
+  sheet_name: "Transactions"
+  formatting:
+    freeze_rows: 1
+    header_bold: true
+    header_background: "#1F1F1F"
+    header_foreground: "#FFFFFF"
+    # Alternating background per month makes the chronological log
+    # scannable without separator rows that would break formulas.
+    month_band_color: "#F2F2F2"
+    number_format: "#,##0.00"
+    column_widths:
+      timestamp: 145
+      date: 95
+      day: 70
+      month: 80
+      category: 130
+      note: 200
+      vendor: 140
+      amount: 90
+      currency: 75
+      amount_usd: 105
+      fx_rate: 75
+      source: 75
+      trace_id: 100
+
+# ─── Monthly tabs (e.g. "April 2026") ───────────────────────────────────
+monthly:
+  # Tokens: {month_name}, {month_short}, {month_num}, {year}
+  sheet_name_pattern: "{month_name} {year}"
+  title_pattern: "{month_name} {year} Expenses"
+  formatting:
+    title_font_size: 14
+    title_bold: true
+    summary_label_bold: true
+    summary_value_bold: true
+    grid_header_background: "#E8E8E8"
+    grid_total_row_background: "#F0F0F0"
+    grid_total_column_background: "#F8F8F8"
+    breakdown_title_bold: true
+    number_format: "#,##0.00"
+    freeze_rows: 10
+    freeze_cols: 2
+    date_column_width: 60
+    day_column_width: 55
+    category_column_width: 95
+    total_column_width: 105
+
+  # Per-category breakdown — how many tags to show per category
+  # block. 10 is plenty for personal use; raise to 25 for power users.
+  breakdown_top_n_per_category: 10
+
+# ─── YTD tab (e.g. "YTD 2026") ──────────────────────────────────────────
+ytd:
+  sheet_name_pattern: "YTD {year}"
+  title_pattern: "Year to Date — {year}"
+  formatting:
+    title_font_size: 14
+    title_bold: true
+    summary_label_bold: true
+    summary_value_bold: true
+    grid_header_background: "#E8E8E8"
+    grid_total_row_background: "#F0F0F0"
+    grid_total_column_background: "#F8F8F8"
+    breakdown_title_bold: true
+    number_format: "#,##0.00"
+    freeze_rows: 10
+    freeze_cols: 1
+    month_column_width: 110
+    category_column_width: 95
+    total_column_width: 110
+
+  # Top N vendors shown in the YTD vendor breakdown.
+  top_vendors_count: 10

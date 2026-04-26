@@ -1,77 +1,127 @@
-# Default category taxonomy for the expense tracker.
+# Canonical category taxonomy for the expense tracker.
 #
-# Each entry has:
-#   name      ← canonical display name (this is what lands in the Sheet
-#               column header)
-#   aliases   ← lowercase phrases that should map to this canonical name.
-#               Useful when the LLM emits a synonym we'd rather normalise.
-#   hint      ← optional one-line description sent to the LLM as context
-#               so it can disambiguate. Keep these short — they're tokens.
+# This list is the *contract* between three layers:
 #
-# Step 4 will replace this file with one generated from the user's actual
-# Google-Sheet column headers, so add aliases for whatever phrasing you
-# typically use in chat.
+#   1. The LLM extractor — the canonical names below are what stage-2
+#      prompts list as the allowed values, and what the model is asked
+#      to emit.
+#   2. The category-registry alias map — the LLM (or a human typing
+#      synonyms) can say "starbucks" and we collapse it to "Food".
+#   3. The Sheets builder — every monthly tab gets one column per
+#      canonical name, in the order they appear here.
+#
+# So: add a category by adding an entry with at least `name`. Add an
+# alias by adding to that category's `aliases` list. Reorder by moving
+# the entries around. The bot picks up changes on next process start.
+#
+# `fallback_category` is the catch-all bucket used when:
+#   - The LLM emits a category we can't resolve via aliases.
+#   - The user logs something that doesn't match any vocabulary.
+# It MUST match one of the canonical `name` values below.
 
-schema_version: 1
+schema_version: 2
+fallback_category: Miscellaneous
 
 categories:
+  - name: Groceries
+    hint: supermarket food shopping (NOT eating out)
+    aliases:
+      [groceries, grocery, groc, supermarket, fruits, fruit, vegetables, veg,
+       trader joes, traderjoes, walmart, costco, kroger, hmart, indian store,
+       kirana, milk, eggs, bread, produce, whole foods, sprouts, aldi, target food]
+
+  - name: House
+    hint: rent, electricity, water, wifi, apartment maintenance / fees
+    aliases:
+      [house, rent, mortgage, electricity, electric, electric bill, power,
+       power bill, water, water bill, wifi, internet, broadband, comcast,
+       xfinity, att internet, apartment, apartment charge, apartment fee,
+       digital apartment charge, trash, trash bill, maintenance, hoa,
+       gas bill, utility, utilities]
+
   - name: Food
-    hint: groceries, supermarket, fruit & veg
-    aliases: [food, groceries, groc, supermarket, fruits, veg, vegetables, kirana]
-
-  - name: Restaurants
-    hint: eating out, takeout, food delivery
+    hint: dining out, restaurants, takeout, coffee, juice, ice cream, snacks
     aliases:
-      [restaurant, restaurants, dining, eatout, lunch, dinner, breakfast,
-       brunch, takeout, takeaway, swiggy, zomato, doordash, ubereats]
+      [food, restaurant, restaurants, dining, dining out, eat out, eatout,
+       eating out, lunch, dinner, breakfast, brunch, takeout, takeaway,
+       doordash, ubereats, uber eats, grubhub, swiggy, zomato, coffee,
+       cafe, starbucks, latte, cappuccino, espresso, tea, chai, juice,
+       smoothie, ice cream, icecream, dessert, snack, snacks, pizza,
+       burger, biryani, pho, sushi, ramen, indian restaurant, chipotle]
 
-  - name: Coffee
-    hint: coffee, tea, snacks at cafes
-    aliases: [coffee, cafe, starbucks, latte, cappuccino, espresso, tea, chai]
-
-  - name: Transport
-    hint: taxi, fuel, public transit
+  - name: Party
+    hint: alcohol, drinks, bar, beer, wine, liquor
     aliases:
-      [transport, transportation, taxi, uber, ola, lyft, cab, metro, bus,
-       train, fuel, gas, petrol, diesel, parking, toll]
+      [party, alcohol, drink, drinks, beer, wine, liquor, vodka, whiskey,
+       rum, tequila, bar, pub, brewery, cocktail, total wine, bevmo,
+       binnys, drinks out]
+
+  - name: Medicines
+    hint: doctor, pharmacy, hospital, prescriptions, medical bills
+    aliases:
+      [medicine, medicines, medication, medications, prescription,
+       prescriptions, doctor, doctors visit, hospital, clinic, urgent care,
+       pharmacy, cvs, walgreens, dental, dentist, copay, lab, lab test,
+       xray, mri, ent, gp, primary care, blood test, vaccine, health]
 
   - name: Shopping
-    hint: clothes, electronics, online orders
+    hint: clothes, electronics, household goods, online orders
     aliases:
-      [shopping, clothes, clothing, electronics, amazon, flipkart, online,
-       shoes, accessories]
+      [shopping, clothes, clothing, shirt, shirts, pants, dress, shoes,
+       sneakers, electronics, amazon, amzn, flipkart, target, best buy,
+       ikea, online order, accessories, watch, sunglasses, bag, purse,
+       handbag, jacket]
 
-  - name: Bills
-    hint: rent, utilities, subscriptions
+  - name: Movies
+    hint: theater movie tickets ONLY (Netflix etc. → Digital)
     aliases:
-      [bills, bill, rent, electric, electricity, water, internet, phone,
-       mobile, broadband, subscription, netflix, spotify]
+      [movie, movies, cinema, theater, theatre, amc, regal, imax,
+       movie ticket, movie tickets, theater ticket]
 
-  - name: Health
-    hint: doctor, pharmacy, gym
+  - name: Saloon
+    hint: haircut, salon, spa, grooming, facial
     aliases:
-      [health, medical, doctor, doctors, medicine, pharmacy, hospital,
-       clinic, dental, gym, fitness]
+      [saloon, salon, haircut, hair cut, hair, beard, trim, beard trim,
+       barber, spa, facial, manicure, pedicure, mani pedi, waxing,
+       threading, eyebrow, grooming, supercuts, great clips]
 
-  - name: Entertainment
-    hint: movies, streaming, events, games
+  - name: India Expense
+    hint: money sent to India via Remitly / Wise; spending while in India
     aliases:
-      [entertainment, movie, movies, cinema, concert, event, game, gaming,
-       book, books]
+      [india, india expense, remitly, wise, transferwise, xoom, sent to
+       india, sent home, family, parents, mom, dad, sister, brother,
+       transfer to india, money to india, india money]
 
-  - name: Travel
-    hint: flights, hotels, vacations
-    aliases: [travel, trip, vacation, flight, flights, hotel, hotels, airbnb]
-
-  - name: Personal Care
-    hint: haircut, salon, toiletries
+  - name: Travelling
+    hint: vacation, trips, flights (incl. India), hotels, Airbnb, airport rides
     aliases:
-      [personal care, haircut, salon, spa, barber, toiletries, cosmetics]
+      [travel, travelling, traveling, trip, vacation, holiday, flight,
+       flights, airfare, plane, airplane, ticket to india, india ticket,
+       hotel, hotels, airbnb, motel, lodging, expedia, booking,
+       booking dot com, kayak, lyft to airport, uber to airport,
+       airport ride, airport]
 
-  - name: Gifts
-    hint: gifts, donations
-    aliases: [gift, gifts, donation, donations, charity, present]
+  - name: Miscellaneous
+    hint: catch-all for anything that doesn't fit above (fees, fines, gifts, taxis)
+    aliases:
+      [miscellaneous, misc, other, others, miscellanous, uber, lyft, cab,
+       taxi, parking, toll, fine, fines, penalty, penalties, late fee,
+       fee, fees, gift, gifts, donation, donations, charity, present,
+       random, uncategorized, uncategorised]
 
-  - name: Other
-    hint: anything that doesn't fit the buckets above
-    aliases: [other, misc, miscellaneous, uncategorised, uncategorized]
+  - name: Digital
+    hint: streaming subscriptions (Netflix, Hotstar, Spotify, OTT, apps)
+    aliases:
+      [digital, subscription, subscriptions, netflix, hotstar, prime video,
+       amazon prime, prime, hulu, disney plus, disney+, hbo, max, hbo max,
+       apple tv, apple tv plus, paramount, peacock, spotify, apple music,
+       youtube premium, youtube music, ott, cricbuz, cricbuzz, sonyliv,
+       zee5, voot, jio cinema, icloud, google one, dropbox]
+
+  - name: Tesla Car
+    hint: Tesla charging, FSD, Premium Connectivity, insurance, service
+    aliases:
+      [tesla, tesla car, charging, supercharger, super charger, fsd,
+       full self driving, premium connectivity, tesla insurance, model y,
+       model 3, model s, model x, autopilot, tesla service, tesla repair,
+       tesla wall charger, tesla app]

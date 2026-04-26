@@ -48,7 +48,7 @@ def test_normalises_alias_to_canonical(fake_llm):
         json.dumps(
             {
                 "date": "2026-04-24",
-                "category": "starbucks",  # alias
+                "category": "starbucks",  # alias for Food in our taxonomy
                 "amount": 5,
                 "currency": "USD",
                 "vendor": "Starbucks",
@@ -60,11 +60,11 @@ def test_normalises_alias_to_canonical(fake_llm):
 
     result = ext.extract("starbucks $5", today=TODAY)
 
-    assert result.expense.category == "Coffee"
+    assert result.expense.category == "Food"
     assert result.expense.currency == "USD"
 
 
-def test_unknown_category_falls_back_to_other(fake_llm):
+def test_unknown_category_falls_back_to_miscellaneous(fake_llm):
     fake_llm.queue_response(
         json.dumps(
             {
@@ -81,7 +81,7 @@ def test_unknown_category_falls_back_to_other(fake_llm):
 
     result = ext.extract("100 on spaceship fuel", today=TODAY)
 
-    assert result.expense.category == "Other"
+    assert result.expense.category == "Miscellaneous"
 
 
 def test_currency_uppercased(fake_llm):

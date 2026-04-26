@@ -35,3 +35,6 @@ env/
 *.log
 logs/
 data/local/
+
+# Local secrets (service-account JSON, etc.)
+secrets/

@@ -1,33 +1,28 @@
 """CLI entry point — ``python -m expense_tracker`` / ``expense ...``.
 
-Today this is a thin diagnostic tool for the LLM layer. It will grow
-into a real "expense add" / "expense query" CLI once Steps 3 and 4 land.
+Two flavours of commands live here:
 
-Available commands:
+* **LLM diagnostics** (Steps 1-3): ``--ping-llm``, ``--extract``.
+* **Sheets tools** (Step 4): ``--whoami``, ``--list-sheets``,
+  ``--init-transactions``, ``--build-month``, ``--rebuild-month``,
+  ``--build-ytd``, ``--rebuild-ytd``, ``--setup-year``.
 
-* ``python -m expense_tracker --version``        Show package version.
-* ``python -m expense_tracker --ping-llm``       Send a tiny prompt to the
-  configured LLM provider and print the response + latency. Best way to
-  smoke-test that your ``.env`` is wired correctly.
-* ``python -m expense_tracker --ping-llm --json``  Same, but force JSON
-  mode and validate the result against a tiny Pydantic schema. Best way
-  to verify structured-output reliability of the model you picked.
-* ``python -m expense_tracker --extract "spent 40 on coffee yesterday"``
-  Run the full extractor pipeline (intent classification + schema-
-  specific extraction) and print the resulting :class:`ExtractionResult`.
-  Best way to feel out how the bot will read your phrasing.
+All Sheets commands honour ``--fake`` for offline experimentation —
+the layout runs end-to-end against an in-memory backend so you can
+preview behaviour without touching your real spreadsheet.
 """
 
 from __future__ import annotations
 
 import argparse
+import calendar
 import sys
 from typing import NoReturn
 
 from pydantic import BaseModel
 
 from . import __version__
-from .config import get_settings
+from .config import Settings, get_settings
 from .llm import LLMError, Message, get_llm_client
 
 
@@ -38,12 +33,14 @@ class _PingResult(BaseModel):
     is_alive: bool
 
 
+# ─── Argparse ──────────────────────────────────────────────────────────
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="expense",
         description=(
-            "Personal expense tracker. Today: scaffold + LLM smoke tests. "
-            "Tomorrow: chat-driven Google Sheets logger."
+            "Personal expense tracker. LLM smoke tests + chat-driven "
+            "Google Sheets logger."
         ),
     )
     p.add_argument(
@@ -51,26 +48,97 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"expense_tracker {__version__}",
     )
-    p.add_argument(
+
+    # ─── LLM diagnostics ───────────────────────────────────────────────
+    g_llm = p.add_argument_group("LLM diagnostics")
+    g_llm.add_argument(
         "--ping-llm",
         action="store_true",
         help="Send a tiny prompt to the configured LLM and print the response.",
     )
-    p.add_argument(
+    g_llm.add_argument(
         "--json",
         action="store_true",
         help="With --ping-llm: force JSON mode and validate the response.",
     )
-    p.add_argument(
+    g_llm.add_argument(
         "--extract",
         metavar="TEXT",
         help=(
             "Run the full extractor pipeline on TEXT and print the "
-            "structured ExtractionResult. Useful for prompt-tuning."
+            "structured ExtractionResult."
         ),
     )
+
+    # ─── Sheets tools ──────────────────────────────────────────────────
+    g_sheets = p.add_argument_group(
+        "Google Sheets",
+        description=(
+            "Inspect the configured spreadsheet and build / rebuild tabs. "
+            "Add --fake to any command to run against an in-memory backend "
+            "(no network)."
+        ),
+    )
+    g_sheets.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use the in-memory FakeSheetsBackend for any Sheets command.",
+    )
+    g_sheets.add_argument(
+        "--whoami",
+        action="store_true",
+        help="Show the spreadsheet title, URL, and authorised service-account email.",
+    )
+    g_sheets.add_argument(
+        "--list-sheets",
+        action="store_true",
+        help="List all tabs in the configured spreadsheet.",
+    )
+    g_sheets.add_argument(
+        "--init-transactions",
+        action="store_true",
+        help="Create the Transactions master ledger tab if missing.",
+    )
+    g_sheets.add_argument(
+        "--build-month",
+        metavar="YYYY-MM",
+        help="Build one monthly tab (e.g. 2026-04). Refuses if it exists.",
+    )
+    g_sheets.add_argument(
+        "--rebuild-month",
+        metavar="YYYY-MM",
+        help="Like --build-month but deletes & recreates the tab if it exists.",
+    )
+    g_sheets.add_argument(
+        "--build-ytd",
+        metavar="YYYY",
+        help="Build the YTD <year> dashboard tab. Refuses if it exists.",
+    )
+    g_sheets.add_argument(
+        "--rebuild-ytd",
+        metavar="YYYY",
+        help="Like --build-ytd but deletes & recreates the tab if it exists.",
+    )
+    g_sheets.add_argument(
+        "--setup-year",
+        metavar="YYYY",
+        help="Bulk-build all 12 monthly tabs + YTD for the given year.",
+    )
+    g_sheets.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="With --setup-year: overwrite tabs that already exist.",
+    )
+    g_sheets.add_argument(
+        "--hide-previous",
+        action="store_true",
+        help="With --setup-year: hide all monthly tabs from the previous year.",
+    )
+
     return p
 
+
+# ─── LLM commands ──────────────────────────────────────────────────────
 
 def _cmd_ping_llm(json_mode: bool) -> int:
     cfg = get_settings()
@@ -183,17 +251,259 @@ def _cmd_extract(text: str) -> int:
     return 0
 
 
+# ─── Sheets command helpers ────────────────────────────────────────────
+
+def _open_backend(cfg: Settings, *, fake: bool):
+    """Construct a backend, translating typed errors into CLI exits."""
+    from .sheets import SheetsError, get_sheets_backend
+
+    try:
+        return get_sheets_backend(cfg, fake=fake)
+    except SheetsError as exc:
+        print(f"\n[sheets config error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _categories_or_exit() -> list[str]:
+    """Load canonical category names from the registry."""
+    from .extractor import get_registry
+
+    try:
+        return get_registry().canonical_names()
+    except Exception as exc:
+        print(f"\n[categories error] {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _parse_year_month(value: str, *, label: str) -> tuple[int, int]:
+    """Accept ``YYYY-MM`` and return ``(year, month)``."""
+    parts = value.strip().split("-")
+    if len(parts) != 2:
+        print(
+            f"\n[arg error] {label} must look like YYYY-MM (e.g. 2026-04), got {value!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        year = int(parts[0])
+        month = int(parts[1])
+    except ValueError:
+        print(f"\n[arg error] {label}: year/month must be integers", file=sys.stderr)
+        sys.exit(2)
+    if not (1900 <= year <= 2200):
+        print(f"\n[arg error] {label}: year out of range: {year}", file=sys.stderr)
+        sys.exit(2)
+    if not (1 <= month <= 12):
+        print(f"\n[arg error] {label}: month must be 1..12, got {month}", file=sys.stderr)
+        sys.exit(2)
+    return year, month
+
+
+def _parse_year(value: str, *, label: str) -> int:
+    try:
+        year = int(value.strip())
+    except ValueError:
+        print(f"\n[arg error] {label}: year must be an integer", file=sys.stderr)
+        sys.exit(2)
+    if not (1900 <= year <= 2200):
+        print(f"\n[arg error] {label}: year out of range: {year}", file=sys.stderr)
+        sys.exit(2)
+    return year
+
+
+# ─── Sheets commands ───────────────────────────────────────────────────
+
+def _cmd_whoami(*, fake: bool) -> int:
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    print(f"Spreadsheet : {backend.title}")
+    url = getattr(backend, "url", None)
+    if url:
+        print(f"URL         : {url}")
+    print(f"Sheet ID    : {backend.spreadsheet_id}")
+    email = getattr(backend, "service_account_email", None)
+    if email:
+        print(f"Robot email : {email}")
+    print(f"Backend     : {'fake' if fake else 'gspread'}")
+    return 0
+
+
+def _cmd_list_sheets(*, fake: bool) -> int:
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    titles = [w.title for w in backend.list_worksheets()]
+    print(f"Spreadsheet : {backend.title}")
+    print(f"Tabs ({len(titles)}):")
+    if not titles:
+        print("  (none)")
+    for t in titles:
+        print(f"  - {t}")
+    return 0
+
+
+def _cmd_init_transactions(*, fake: bool) -> int:
+    from .sheets import SheetsError, get_sheet_format, init_transactions_tab
+
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    fmt = get_sheet_format()
+
+    try:
+        ws = init_transactions_tab(backend, fmt)
+    except SheetsError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Transactions tab ready: {ws.title!r} in {backend.title!r}")
+    print(f"  rows={ws.row_count}, cols={ws.col_count}")
+    return 0
+
+
+def _cmd_build_month(value: str, *, fake: bool, overwrite: bool) -> int:
+    from .sheets import SheetsError, build_month_tab, get_sheet_format
+
+    year, month = _parse_year_month(value, label="--build-month")
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    fmt = get_sheet_format()
+    categories = _categories_or_exit()
+
+    print(f"Building monthly tab: {calendar.month_name[month]} {year}")
+    print(f"Categories : {len(categories)} ({', '.join(categories)})")
+    print(f"Overwrite  : {overwrite}")
+
+    try:
+        ws = build_month_tab(
+            backend, fmt,
+            year=year, month=month,
+            categories=categories,
+            overwrite=overwrite,
+        )
+    except SheetsError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"\nDone: {ws.title!r}")
+    return 0
+
+
+def _cmd_build_ytd(value: str, *, fake: bool, overwrite: bool) -> int:
+    from .sheets import SheetsError, build_ytd_tab, get_sheet_format
+
+    year = _parse_year(value, label="--build-ytd")
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    fmt = get_sheet_format()
+    categories = _categories_or_exit()
+
+    print(f"Building YTD dashboard: {year}")
+    print(f"Categories : {len(categories)}")
+    print(f"Overwrite  : {overwrite}")
+
+    try:
+        ws = build_ytd_tab(
+            backend, fmt,
+            year=year,
+            categories=categories,
+            overwrite=overwrite,
+        )
+    except SheetsError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"\nDone: {ws.title!r}")
+    return 0
+
+
+def _cmd_setup_year(
+    value: str, *, fake: bool, overwrite: bool, hide_previous: bool,
+) -> int:
+    from .sheets import SheetsError, get_sheet_format, setup_year
+
+    year = _parse_year(value, label="--setup-year")
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    fmt = get_sheet_format()
+    categories = _categories_or_exit()
+
+    print(f"Setting up year: {year}")
+    print(f"Categories      : {len(categories)}")
+    print(f"Overwrite       : {overwrite}")
+    print(f"Hide previous   : {hide_previous}")
+    print()
+
+    try:
+        report = setup_year(
+            backend, fmt,
+            year=year,
+            categories=categories,
+            overwrite=overwrite,
+            hide_previous=hide_previous,
+        )
+    except SheetsError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Created : {len(report.months_created)} monthly tabs")
+    for t in report.months_created:
+        print(f"  + {t}")
+    if report.months_skipped:
+        print(f"\nSkipped : {len(report.months_skipped)} (already existed)")
+        for t in report.months_skipped:
+            print(f"  · {t}")
+    print(
+        f"\nYTD     : {report.ytd_tab!r} "
+        f"({'rebuilt' if report.ytd_overwritten else 'created or kept'})"
+    )
+    if report.previous_year_hidden:
+        print(f"\nHidden previous-year tabs ({len(report.previous_year_hidden)}):")
+        for t in report.previous_year_hidden:
+            print(f"  - {t}")
+    print(f"\nSummary : {report.short_summary()}")
+    return 0
+
+
+# ─── Dispatch ──────────────────────────────────────────────────────────
+
 def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     args = _build_parser().parse_args(argv)
 
+    # LLM commands.
     if args.ping_llm:
         sys.exit(_cmd_ping_llm(json_mode=args.json))
     if args.extract is not None:
         sys.exit(_cmd_extract(args.extract))
 
+    # Sheets commands.
+    if args.whoami:
+        sys.exit(_cmd_whoami(fake=args.fake))
+    if args.list_sheets:
+        sys.exit(_cmd_list_sheets(fake=args.fake))
+    if args.init_transactions:
+        sys.exit(_cmd_init_transactions(fake=args.fake))
+    if args.build_month is not None:
+        sys.exit(_cmd_build_month(args.build_month, fake=args.fake, overwrite=False))
+    if args.rebuild_month is not None:
+        sys.exit(_cmd_build_month(args.rebuild_month, fake=args.fake, overwrite=True))
+    if args.build_ytd is not None:
+        sys.exit(_cmd_build_ytd(args.build_ytd, fake=args.fake, overwrite=False))
+    if args.rebuild_ytd is not None:
+        sys.exit(_cmd_build_ytd(args.rebuild_ytd, fake=args.fake, overwrite=True))
+    if args.setup_year is not None:
+        sys.exit(_cmd_setup_year(
+            args.setup_year,
+            fake=args.fake,
+            overwrite=args.overwrite,
+            hide_previous=args.hide_previous,
+        ))
+
     print(f"expense_tracker scaffold OK (v{__version__})")
-    print("Try: `python -m expense_tracker --ping-llm` to test your LLM config.")
-    print('  or: `python -m expense_tracker --extract "spent 40 on coffee"`.')
+    print("LLM   : --ping-llm | --extract \"…\"")
+    print("Sheets: --whoami | --list-sheets | --init-transactions")
+    print("        --build-month YYYY-MM | --rebuild-month YYYY-MM")
+    print("        --build-ytd YYYY      | --rebuild-ytd YYYY")
+    print("        --setup-year YYYY [--overwrite] [--hide-previous]")
+    print("Add --fake to any Sheets command to run offline.")
     sys.exit(0)
 
 

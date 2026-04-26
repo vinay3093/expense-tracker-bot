@@ -4,19 +4,23 @@ Loads the category list from ``data/categories.yaml`` (or a user-supplied
 override path) and provides:
 
 * :meth:`CategoryRegistry.canonical_names` — the display names that go
-  into the Sheet column header.
+  into the Sheet column headers (and into Transactions tab Category cells).
 * :meth:`CategoryRegistry.resolve` — map any alias the LLM emitted to
   its canonical name; returns ``None`` if unresolved (caller decides
-  whether to fall back to ``"Other"``).
+  whether to fall back).
+* :meth:`CategoryRegistry.resolve_or_fallback` — same, but always returns
+  a usable name by routing unknown labels to ``self.fallback_category``.
 * :meth:`CategoryRegistry.prompt_block` — formatted text block sent to
   the LLM as part of the extraction prompt.
 
 Why a separate registry rather than hard-coded constants:
 
-* Step 4 will swap ``categories.yaml`` for a file generated from your
-  actual Sheet column headers; we want zero code changes on that day.
+* Step 4+ may regenerate ``categories.yaml`` from your actual Sheet
+  column headers; we want zero code changes on that day.
 * Personalising the alias table over time is the lowest-effort,
   highest-payoff way to improve extractor accuracy on your idioms.
+* The Sheets builder reads the same registry, so categories defined in
+  YAML automatically become spreadsheet columns — single source of truth.
 """
 
 from __future__ import annotations
@@ -31,10 +35,11 @@ from ..config import get_settings
 
 _DEFAULT_DATA_FILE = Path(__file__).parent / "data" / "categories.yaml"
 
-#: Canonical name used as the catch-all when no alias resolves. Keeping
-#: this as a constant (not a Settings field) avoids an extra knob nobody
-#: needs to tune.
-FALLBACK_CATEGORY: str = "Other"
+#: Module-level constant kept for callers that want a stable default
+#: without holding a registry instance. Updated to match the user's
+#: own taxonomy. Prefer ``registry.fallback_category`` when you have
+#: a registry handy — the YAML file is authoritative.
+FALLBACK_CATEGORY: str = "Miscellaneous"
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,7 @@ class CategoryRegistry:
 
     schema_version: int
     categories: tuple[Category, ...]
+    fallback_category: str = FALLBACK_CATEGORY
 
     # Pre-computed lookup tables. Built once in :meth:`from_dict` and
     # never mutated, so the registry is safe to share across threads.
@@ -61,6 +67,10 @@ class CategoryRegistry:
     def from_dict(cls, data: dict) -> CategoryRegistry:
         """Build a registry from parsed YAML data."""
         version = int(data.get("schema_version", 1))
+        fallback = str(data.get("fallback_category", FALLBACK_CATEGORY)).strip()
+        if not fallback:
+            fallback = FALLBACK_CATEGORY
+
         cats: list[Category] = []
         for entry in data.get("categories", []):
             name = str(entry["name"]).strip()
@@ -79,7 +89,6 @@ class CategoryRegistry:
 
         alias_lower: dict[str, str] = {}
         for c in cats:
-            # Canonical name is itself an alias of itself.
             alias_lower[c.name.lower()] = c.name
             for a in c.aliases:
                 if a in alias_lower and alias_lower[a] != c.name:
@@ -88,14 +97,17 @@ class CategoryRegistry:
                     )
                 alias_lower[a] = c.name
 
-        if FALLBACK_CATEGORY not in canonical_lower.values():
+        canonical_names = set(canonical_lower.values())
+        if fallback not in canonical_names:
             raise ValueError(
-                f"category YAML must define a canonical {FALLBACK_CATEGORY!r} entry"
+                f"fallback_category {fallback!r} must be one of the canonical "
+                f"names defined in 'categories'. Got: {sorted(canonical_names)}"
             )
 
         return cls(
             schema_version=version,
             categories=tuple(cats),
+            fallback_category=fallback,
             _by_canonical_lower=canonical_lower,
             _by_alias_lower=alias_lower,
         )
@@ -124,17 +136,17 @@ class CategoryRegistry:
         return self._by_alias_lower.get(cleaned)
 
     def resolve_or_fallback(self, label: str | None) -> str:
-        """Resolve *label* or return :data:`FALLBACK_CATEGORY`."""
-        return self.resolve(label) or FALLBACK_CATEGORY
+        """Resolve *label* or return :attr:`fallback_category`."""
+        return self.resolve(label) or self.fallback_category
 
     # ─── Prompt rendering ────────────────────────────────────────────────
     def prompt_block(self) -> str:
         """Compact block listing every canonical category with its hint.
 
         Format chosen to be cheap on tokens — one line per category,
-        canonical name first, hint after a separator. The LLM should
-        return one of the canonical names verbatim; aliases on our side
-        cover everything else.
+        canonical name first, hint after a separator. The LLM is asked
+        to return one of the canonical names verbatim; aliases on our
+        side cover everything else.
         """
         lines: list[str] = ["Allowed categories (use the canonical name on the left):"]
         for c in self.categories:
@@ -142,6 +154,9 @@ class CategoryRegistry:
                 lines.append(f"  - {c.name}  —  {c.hint}")
             else:
                 lines.append(f"  - {c.name}")
+        lines.append(
+            f"\nIf nothing fits, return {self.fallback_category!r} (the catch-all)."
+        )
         return "\n".join(lines)
 
 

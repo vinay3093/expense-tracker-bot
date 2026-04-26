@@ -19,6 +19,7 @@ import pytest
 from expense_tracker.config import reset_settings_cache_for_tests
 from expense_tracker.extractor.categories import reset_registry_cache_for_tests
 from expense_tracker.llm._fake import FakeLLMClient
+from expense_tracker.sheets.format import reset_format_cache_for_tests
 
 _PROJECT_ENV_VARS = (
     "LLM_PROVIDER",
@@ -40,6 +41,10 @@ _PROJECT_ENV_VARS = (
     "TIMEZONE",
     "DEFAULT_CURRENCY",
     "EXTRACTOR_CATEGORIES_FILE",
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "EXPENSE_SHEET_ID",
+    "SHEET_FORMAT_FILE",
+    "SHEETS_TIMEOUT_S",
 )
 
 
@@ -55,16 +60,19 @@ def isolated_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     reset_settings_cache_for_tests()
     reset_registry_cache_for_tests()
+    reset_format_cache_for_tests()
 
     def _set(**kv: str) -> None:
         for k, v in kv.items():
             monkeypatch.setenv(k, v)
         reset_settings_cache_for_tests()
         reset_registry_cache_for_tests()
+        reset_format_cache_for_tests()
 
     yield _set
     reset_settings_cache_for_tests()
     reset_registry_cache_for_tests()
+    reset_format_cache_for_tests()
 
 
 @pytest.fixture

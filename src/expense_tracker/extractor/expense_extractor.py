@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from ..llm import LLMClient, LLMResponse, Message
-from .categories import FALLBACK_CATEGORY, CategoryRegistry
+from .categories import CategoryRegistry
 from .prompts import build_expense_system_prompt, build_expense_user_prompt
 from .schemas import ExpenseEntry
 
@@ -23,8 +23,9 @@ class ExpenseExtractor:
     Categories returned by the LLM go through
     :meth:`CategoryRegistry.resolve` so user-typed synonyms collapse to
     canonical names. If the LLM emits a category we can't resolve at
-    all, we fall back to :data:`FALLBACK_CATEGORY` rather than failing
-    the whole turn — the user can correct it on the next message.
+    all, we fall back to :attr:`CategoryRegistry.fallback_category`
+    rather than failing the whole turn — the user can correct it on
+    the next message.
     """
 
     def __init__(
@@ -53,7 +54,7 @@ class ExpenseExtractor:
         # Normalise category to a canonical name. The LLM has been told
         # to pick from the canonical list, but small models occasionally
         # spell or capitalise differently — defence in depth.
-        canonical = self._registry.resolve(raw.category) or FALLBACK_CATEGORY
+        canonical = self._registry.resolve_or_fallback(raw.category)
         if canonical != raw.category:
             raw = raw.model_copy(update={"category": canonical})
         return ExpenseExtractorResult(expense=raw, response=resp)
