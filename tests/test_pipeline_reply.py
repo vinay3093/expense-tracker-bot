@@ -14,7 +14,10 @@ Branches covered:
 * sheets / FX failure (ExpenseLogError supplied)
 * smalltalk
 * unclear
-* retrieval-stub for each query intent
+* retrieval — period total, category total, day detail, recent
+* retrieval — empty window says "no expenses found"
+* retrieval — query parsed but no engine wired (older tests path)
+* retrieval — read failure surfaces gracefully
 """
 
 from __future__ import annotations
@@ -33,6 +36,11 @@ from expense_tracker.extractor.schemas import (
 from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import LogResult
 from expense_tracker.pipeline.reply import format_reply
+from expense_tracker.pipeline.retrieval import (
+    LedgerRow,
+    RetrievalAnswer,
+    RetrievalError,
+)
 from expense_tracker.sheets.transactions import TransactionRow
 
 
@@ -214,6 +222,223 @@ def test_extractor_error_branch():
     assert "bad json from llm" in msg
 
 
+# ─── Retrieval replies ─────────────────────────────────────────────────
+
+
+def _ledger_row(
+    *,
+    date_=date(2026, 4, 24),
+    category="Food",
+    amount_usd=12.5,
+    amount=12.5,
+    currency="USD",
+    note=None,
+    vendor=None,
+    row_index=2,
+) -> LedgerRow:
+    import calendar as _cal
+    return LedgerRow(
+        row_index=row_index,
+        date=date_,
+        day=date_.strftime("%a"),
+        month=_cal.month_name[date_.month],
+        year=date_.year,
+        category=category,
+        note=note,
+        vendor=vendor,
+        amount=amount,
+        currency=currency,
+        amount_usd=amount_usd,
+        fx_rate=1.0,
+        source="chat",
+        trace_id=None,
+        timestamp=None,
+    )
+
+
+def _april_query(
+    intent: Intent, *, category: str | None = None, limit: int | None = None,
+) -> RetrievalQuery:
+    return RetrievalQuery(
+        intent=intent,
+        time_range=TimeRange(
+            start=date(2026, 4, 1),
+            end=date(2026, 4, 30),
+            label="April 2026",
+        ),
+        category=category,
+        limit=limit,
+    )
+
+
+def test_retrieval_period_total_lists_top_categories():
+    query = _april_query(Intent.QUERY_PERIOD_TOTAL)
+    rows = [
+        _ledger_row(category="Groceries", amount_usd=450.0, row_index=2),
+        _ledger_row(category="Food",      amount_usd=300.0, row_index=3),
+        _ledger_row(category="Tesla Car", amount_usd=240.0, row_index=4,
+                    vendor="Tesla", note="charging"),
+    ]
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_PERIOD_TOTAL,
+        query=query,
+        matched_rows=rows,
+        total_usd=990.0,
+        transaction_count=3,
+        by_category={"Groceries": 450.0, "Food": 300.0, "Tesla Car": 240.0},
+        by_day={date(2026, 4, 24): 990.0},
+        largest=rows[0],
+    )
+    result = _result(Intent.QUERY_PERIOD_TOTAL, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "April 2026" in msg
+    assert "$990.00" in msg
+    assert "3 transactions" in msg
+    # Top categories are mentioned in spend order.
+    assert msg.find("Groceries") < msg.find("Food") < msg.find("Tesla Car")
+    assert "$450.00" in msg
+
+
+def test_retrieval_category_total_mentions_largest():
+    query = _april_query(Intent.QUERY_CATEGORY_TOTAL, category="Food")
+    biggest = _ledger_row(
+        category="Food", amount_usd=45.0, vendor="Chipotle",
+        date_=date(2026, 4, 18), note="lunch",
+    )
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_CATEGORY_TOTAL,
+        query=query,
+        matched_rows=[biggest, _ledger_row(category="Food", amount_usd=15.0)],
+        total_usd=60.0,
+        transaction_count=2,
+        by_category={"Food": 60.0},
+        by_day={date(2026, 4, 18): 45.0, date(2026, 4, 24): 15.0},
+        largest=biggest,
+    )
+    result = _result(Intent.QUERY_CATEGORY_TOTAL, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "April 2026 / Food" in msg
+    assert "$60.00" in msg
+    assert "2 transactions" in msg
+    assert "Largest: $45.00" in msg
+    assert "Sat 18 Apr" in msg
+    assert "Chipotle" in msg
+    assert "lunch" in msg
+
+
+def test_retrieval_day_detail_lists_each_row():
+    query = RetrievalQuery(
+        intent=Intent.QUERY_DAY,
+        time_range=TimeRange(
+            start=date(2026, 4, 25),
+            end=date(2026, 4, 25),
+            label="Sat 25 Apr 2026",
+        ),
+    )
+    rows = [
+        _ledger_row(category="Food", amount_usd=40.0, vendor="Starbucks",
+                    note="coffee", row_index=2),
+        _ledger_row(category="Groceries", amount_usd=35.0, vendor="Costco",
+                    row_index=3),
+        _ledger_row(category="Saloon", amount_usd=12.5, note="haircut",
+                    row_index=4),
+    ]
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_DAY,
+        query=query,
+        matched_rows=rows,
+        total_usd=87.5,
+        transaction_count=3,
+        by_category={"Food": 40.0, "Groceries": 35.0, "Saloon": 12.5},
+        by_day={date(2026, 4, 25): 87.5},
+        largest=rows[0],
+    )
+    result = _result(Intent.QUERY_DAY, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "Sat 25 Apr 2026" in msg
+    assert "3 transactions" in msg
+    assert "$87.50" in msg
+    # Largest first in the breakdown
+    assert "Food $40.00" in msg
+    assert "Starbucks" in msg
+    assert "Saloon $12.50" in msg
+
+
+def test_retrieval_recent_says_last_n_of_window():
+    query = _april_query(Intent.QUERY_RECENT, limit=3)
+    rows = [
+        _ledger_row(category="Food", amount_usd=12.5, vendor="Cafe",
+                    date_=date(2026, 4, 26), row_index=20),
+        _ledger_row(category="Groceries", amount_usd=88.0,
+                    date_=date(2026, 4, 25), row_index=19),
+        _ledger_row(category="Digital", amount_usd=5.0,
+                    date_=date(2026, 4, 24), row_index=18),
+    ]
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_RECENT,
+        query=query,
+        matched_rows=rows,
+        total_usd=320.0,
+        transaction_count=18,
+        by_category={"Food": 100.0, "Groceries": 200.0, "Digital": 20.0},
+        by_day={r.date: r.amount_usd for r in rows},
+        largest=rows[1],
+    )
+    result = _result(Intent.QUERY_RECENT, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "Last 3" in msg
+    assert "of 18 in April 2026" in msg
+    assert "Food $12.50" in msg
+    assert "Cafe" in msg
+
+
+def test_retrieval_empty_window_yields_no_matches_reply():
+    query = _april_query(Intent.QUERY_PERIOD_TOTAL)
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_PERIOD_TOTAL,
+        query=query,
+        matched_rows=[],
+        total_usd=0.0,
+        transaction_count=0,
+        by_category={},
+        by_day={},
+        largest=None,
+    )
+    result = _result(Intent.QUERY_PERIOD_TOTAL, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "No expenses found" in msg
+    assert "April 2026" in msg
+    assert "$0.00" not in msg, "shouldn't render a misleading zero total"
+
+
+def test_retrieval_query_parsed_but_no_engine_falls_back_to_explanation():
+    # Reachable when ChatPipeline is constructed without a
+    # RetrievalEngine (older tests). Production wires one in.
+    query = _april_query(Intent.QUERY_CATEGORY_TOTAL, category="Food")
+    result = _result(Intent.QUERY_CATEGORY_TOTAL, query=query)
+    msg = format_reply(result)
+
+    assert "April 2026" in msg
+    assert "Food" in msg
+    assert "engine" in msg.lower()
+
+
+def test_retrieval_failure_surfaces_friendly_error():
+    query = _april_query(Intent.QUERY_PERIOD_TOTAL)
+    err = RetrievalError("read timeout from gspread")
+    result = _result(Intent.QUERY_PERIOD_TOTAL, query=query)
+    msg = format_reply(result, retrieval_error=err)
+
+    assert "couldn't read the ledger" in msg
+    assert "read timeout" in msg
+    assert "April 2026" in msg
+
+
 @pytest.mark.parametrize(
     "intent",
     [
@@ -223,7 +448,7 @@ def test_extractor_error_branch():
         Intent.QUERY_RECENT,
     ],
 )
-def test_retrieval_stub_mentions_step_6(intent):
+def test_retrieval_each_intent_dispatches_through_format_reply(intent):
     query = RetrievalQuery(
         intent=intent,
         time_range=TimeRange(
@@ -231,11 +456,20 @@ def test_retrieval_stub_mentions_step_6(intent):
             end=date(2026, 4, 30),
             label="April 2026",
         ),
-        category="Food" if intent != Intent.QUERY_RECENT else None,
+        category="Food" if intent == Intent.QUERY_CATEGORY_TOTAL else None,
+        limit=3 if intent == Intent.QUERY_RECENT else None,
+    )
+    answer = RetrievalAnswer(
+        intent=intent,
+        query=query,
+        matched_rows=[_ledger_row()],
+        total_usd=12.5,
+        transaction_count=1,
+        by_category={"Food": 12.5},
+        by_day={date(2026, 4, 24): 12.5},
+        largest=_ledger_row(),
     )
     result = _result(intent, query=query)
-    msg = format_reply(result)
-    assert "Step 6" in msg
+    msg = format_reply(result, retrieval_answer=answer)
     assert "April 2026" in msg
-    if intent == Intent.QUERY_CATEGORY_TOTAL:
-        assert "Food" in msg
+    assert "$12.50" in msg or "12.50" in msg

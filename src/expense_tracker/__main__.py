@@ -574,6 +574,27 @@ def _cmd_chat(text: str, *, fake: bool) -> int:
         print(f"  FX         : rate={lr.row.fx_rate} src={lr.fx_source}")
     elif turn.log_error is not None:
         print(f"\nLog error  : {turn.log_error}")
+    elif turn.retrieval_answer is not None:
+        ra = turn.retrieval_answer
+        q = ra.query
+        print("\nRead from Sheets:")
+        print(f"  Window     : {q.time_range.label} "
+              f"({q.time_range.start} -> {q.time_range.end})")
+        if q.category:
+            print(f"  Category   : {q.category}")
+        if q.vendor:
+            print(f"  Vendor q   : {q.vendor!r}")
+        print(f"  Total USD  : ${ra.total_usd:,.2f}")
+        print(f"  Tx count   : {ra.transaction_count}")
+        if ra.skipped_rows:
+            print(f"  Skipped    : {ra.skipped_rows} unparseable row(s)")
+        if ra.by_category:
+            top = sorted(ra.by_category.items(), key=lambda kv: -kv[1])[:5]
+            print("  By category:")
+            for cat, total in top:
+                print(f"    - {cat:<14}: ${total:,.2f}")
+    elif turn.retrieval_error is not None:
+        print(f"\nRetrieval error: {turn.retrieval_error}")
     elif turn.extraction.expense is not None:
         print("\nExpense (not written):")
         print(turn.extraction.expense.model_dump_json(indent=2))

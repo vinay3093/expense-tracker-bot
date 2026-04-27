@@ -6,13 +6,13 @@ manually — one row per day, one column per category, daily totals on the right
 column totals at the bottom. The same bot also answers retrieval questions
 ("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
 
-> **Status:** Step 7.1 — Telegram bot + self-healing correction is live.
-> DM the bot ("spent 40 on coffee today") and one row lands in your
-> Sheet; type `/undo` to delete the last entry, or `/edit amount 50`
-> to change it; the affected monthly tab is auto-recomputed so totals
-> stay in sync. Foreign currencies (e.g. INR) are converted to USD on
-> the way in, and re-converted on amount edits. Step 6 (retrieval
-> queries) is the next milestone.
+> **Status:** Step 6 — retrieval queries are live. Logging, correcting,
+> *and* asking ("how much did I spend on food in April?", "show last 5
+> expenses", "what did I spend on 24 Apr?") all flow through the same
+> chat pipeline — over CLI (`expense --chat …`) or Telegram. Foreign
+> currencies (e.g. INR) are converted to USD on the way in, re-converted
+> on amount edits, and aggregated in USD on the way out. Next up: Step 8
+> polish (multi-turn clarification, weekly summaries).
 
 > **Full project handbook:** [`HANDBOOK.md`](./HANDBOOK.md) — the
 > zero-to-running guide covering every external setup step (Google
@@ -405,9 +405,14 @@ expense --chat "spent 12.50 on coffee at starbucks today"
 # Multi-currency — INR auto-converts to USD via Frankfurter.app
 expense --chat "paid 499 RS for netflix"
 
-# Smalltalk and retrieval intents are classified too (retrieval lands in Step 6)
-expense --chat "thanks!"
+# Retrieval queries (Step 6) — answered by reading the master ledger
 expense --chat "how much did I spend on food in april?"
+expense --chat "how much in total in april 2026?"
+expense --chat "show me my last 5 expenses"
+expense --chat "what did I spend on 24 April?"
+
+# Smalltalk is classified and politely acknowledged
+expense --chat "thanks!"
 
 # Try any of the above offline (in-memory backend, no network)
 expense --chat "spent 8 on lunch on may 3" --fake
@@ -605,13 +610,14 @@ expense-tracker-bot/
 │       │   ├── factory.py         ← get_sheets_backend()
 │       │   ├── exceptions.py      ← SheetsError hierarchy
 │       │   └── data/sheet_format.yaml
-│       ├── pipeline/             # chat → row writer (Step 5)
+│       ├── pipeline/             # chat orchestration (Steps 5, 6, 7.1)
 │       │   ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append + recompute nudge)
+│       │   ├── retrieval.py        ← RetrievalEngine + RetrievalAnswer (read ledger + filter + aggregate)
 │       │   ├── correction.py       ← CorrectionLogger / UndoResult / EditResult (Step 7.1)
 │       │   ├── reply.py            ← format_reply() — pure user-facing reply builder
 │       │   ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
-│       │   ├── factory.py          ← get_chat_pipeline() / get_correction_logger()
-│       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / CorrectionError / InconsistentExtraction
+│       │   ├── factory.py          ← get_chat_pipeline() / get_correction_logger() / get_retrieval_engine()
+│       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / RetrievalError / CorrectionError
 │       │   └── __init__.py         ← public API
 │       └── telegram_app/         # Telegram bot front-end (Step 7)
 │           ├── auth.py             ← parse_allowed_users + Authorizer (no SDK)
@@ -641,9 +647,10 @@ expense-tracker-bot/
     ├── test_sheets_currency.py         # cache, identity, API path, stale fallback
     ├── test_sheets_factory.py          # config validation + fake/real selection
     ├── test_pipeline_logger.py         # ExpenseLogger: FX, auto-vivify, alias resolve, errors
+    ├── test_pipeline_retrieval.py      # RetrievalEngine: parsing, filtering, aggregation, multi-currency
     ├── test_pipeline_correction.py     # CorrectionLogger: undo, edit-amount, edit-category, recompute resilience
-    ├── test_pipeline_reply.py          # format_reply: every intent + log/error branches
-    ├── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend)
+    ├── test_pipeline_reply.py          # format_reply: every intent + log/retrieval/error branches
+    ├── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend, log + retrieval)
     ├── test_telegram_auth.py           # allow-list parser + Authorizer
     ├── test_telegram_processor.py      # MessageProcessor (auth + pipeline orchestration)
     ├── test_telegram_correction.py     # CorrectionProcessor: /last, /undo, /edit + arg parser
@@ -659,9 +666,9 @@ expense-tracker-bot/
 4. **Sheets foundation** — service account auth, master `Transactions` ledger, formula-driven monthly + YTD tabs, multi-currency conversion, `--build-month / --setup-year` CLI. **(done)**
 5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done)**
 5.1. **Schema + visual polish** — Transactions reordered (Date | Day | Month | Year | Category | … | Timestamp). ``Month`` is now a human name ("April"), ``Year`` is a 4-digit int. ``Timestamp`` (bot-write time) moved to the far right so backdated entries read clearly. Daily grid + YTD grid now use a "quiet baseline / loud non-zero" emphasis. New ``expense --reinit-transactions`` for safe schema migrations. **(done)**
-6. Sheets reader + aggregator — answer retrieval queries by SUMIFS-equivalent reads.
+6. **Sheets reader + retrieval queries** — `RetrievalEngine` reads the master `Transactions` ledger directly (no SUMIFS round-trip, no stale-formula cache), filters by date window + canonical category + vendor, aggregates everything in USD, and surfaces top categories, per-day breakdowns, and the largest matching row. Wired into the same `ChatPipeline` as logging — every `query_*` intent is now answered, in CLI and Telegram, with a typed `RetrievalAnswer`. Unparseable rows are skipped, never crash the turn. **(done — this commit)**
 7. **Telegram bot** — wraps the chat pipeline in a Telegram front-end. Long-polling (no public URL needed), explicit per-user-ID allow-list, `/start` / `/help` / `/whoami` commands, and `expense --telegram` CLI to run it. **(done)**
-7.1. **Self-healing + corrections** — every log "nudges" the affected monthly tab so the daily grid + summary stay in sync (works around a Google Sheets stale-cache quirk). New `/last`, `/undo`, `/edit amount X`, `/edit category Y` Telegram commands and matching CLI flags (`--undo`, `--edit-amount`, `--edit-category`) target the bottom-most Transactions row. Amount edits re-run FX so `Amount (USD)` stays consistent; category edits canonicalize through the registry. Refined `categories.yaml` to keep personal-care products in `Shopping` (vs salon services). **(done — this commit)**
+7.1. **Self-healing + corrections** — every log "nudges" the affected monthly tab so the daily grid + summary stay in sync (works around a Google Sheets stale-cache quirk). New `/last`, `/undo`, `/edit amount X`, `/edit category Y` Telegram commands and matching CLI flags (`--undo`, `--edit-amount`, `--edit-category`) target the bottom-most Transactions row. Amount edits re-run FX so `Amount (USD)` stays consistent; category edits canonicalize through the registry. Refined `categories.yaml` to keep personal-care products in `Shopping` (vs salon services). **(done)**
 8. Polish — multi-turn clarification, weekly summaries, retrieval over multi-row /undo history.
 
 ## Running it

@@ -1,6 +1,6 @@
 # Expense Tracker Bot — Project Handbook
 
-> **Last updated:** 2026-04-27 · **Code version:** Step 7.1 (commit `fc66657`)
+> **Last updated:** 2026-04-27 · **Code version:** Step 6 (retrieval queries)
 >
 > A complete top-to-bottom guide to this project: what it is, how every
 > external service was set up, what every line of configuration does,
@@ -56,6 +56,9 @@ A chat-driven personal expense tracker that:
   category, daily totals on the right, monthly totals at the bottom.
 - Auto-creates new monthly tabs and the year-to-date dashboard with
   live formulas, never with copy-pasted data.
+- Answers retrieval questions in natural language ("how much did I
+  spend in April?", "how much for food this month?", "show last 5
+  transactions") by reading the master ledger directly.
 - Supports correction commands (`/undo`, `/edit amount X`, `/edit
   category Y`) that target the most recent expense and keep monthly
   totals in sync.
@@ -119,24 +122,24 @@ scope — see §16 for what would need to change to commercialize this.
    │                      │  ExpenseEntry          │            │
    │                      ▼                        ▼            │
    │            ┌────────────────────┐    ┌────────────────────┐│
-   │            │ ExpenseLogger      │    │ Retrieval engine   ││
-   │            │ pipeline/logger.py │    │  (Step 6 — pending)││
-   │            │  • FX convert      │    └────────────────────┘│
-   │            │  • ensure_month_tab│                          │
-   │            │  • append_row      │                          │
-   │            │  • recompute nudge │                          │
-   │            └─────────┬──────────┘                          │
-   │                      │                                     │
-   │                      ▼                                     │
+   │            │ ExpenseLogger      │    │ RetrievalEngine    ││
+   │            │ pipeline/logger.py │    │ pipeline/retrieval ││
+   │            │  • FX convert      │    │  • read ledger     ││
+   │            │  • ensure_month_tab│    │  • filter window   ││
+   │            │  • append_row      │    │  • aggregate USD   ││
+   │            │  • recompute nudge │    └─────────┬──────────┘│
+   │            └─────────┬──────────┘              │           │
+   │                      │                            │        │
+   │                      ▼                            ▼        │
    │      ┌──────────────────────────────────┐                  │
    │      │  Google Sheets (gspread)         │                  │
-   │      │   • Transactions (master ledger) │                  │
+   │      │   • Transactions (master ledger) │ ◄── reads ───────┤
    │      │   • April 2026 (monthly summary) │                  │
    │      │   • YTD 2026   (annual rollup)   │                  │
    │      └──────────────────┬───────────────┘                  │
    │                         │                                  │
    └─────────────────────────┴──────────────────────────────────┘
-                          confirmation reply
+                          confirmation reply / answer
 ```
 
 **Two LLM calls per turn, not one.** A small free model (Groq's
@@ -586,18 +589,19 @@ expense-tracker-bot/
 │   │   ├── factory.py          ← get_sheets_backend()
 │   │   ├── exceptions.py       ← SheetsError hierarchy
 │   │   └── data/sheet_format.yaml
-│   ├── pipeline/             ← Chat → row writer (Step 5) + corrections (Step 7.1)
+│   ├── pipeline/             ← Chat orchestration (Steps 5, 6, 7.1)
 │   │   ├── logger.py           ← ExpenseLogger: FX + ensure_tab + append + recompute nudge
+│   │   ├── retrieval.py        ← RetrievalEngine: read ledger + filter + aggregate
 │   │   ├── correction.py       ← CorrectionLogger: undo / edit / re-FX / nudge
 │   │   ├── reply.py            ← format_reply() — pure user-facing reply builder
 │   │   ├── chat.py             ← ChatPipeline + ChatTurn
-│   │   ├── factory.py          ← get_chat_pipeline / get_correction_logger
-│   │   └── exceptions.py       ← PipelineError / ExpenseLogError / CorrectionError
+│   │   ├── factory.py          ← get_chat_pipeline / get_correction_logger / get_retrieval_engine
+│   │   └── exceptions.py       ← PipelineError / ExpenseLogError / RetrievalError / CorrectionError
 │   └── telegram_app/         ← Telegram front-end (Step 7)
 │       ├── auth.py             ← parse_allowed_users + Authorizer (no SDK imports)
 │       ├── bot.py              ← MessageProcessor + CorrectionProcessor + handler factories
 │       └── factory.py          ← build_application + run_polling
-└── tests/                    ← 394 tests, all offline
+└── tests/                    ← 427 tests, all offline
     ├── conftest.py             ← isolated_env / fake_llm fixtures
     └── test_*.py               ← One per module, plus integration tests
 ```
@@ -679,21 +683,32 @@ in §9.
   disk in JSON, and falls back to the most recent cached rate if the
   API is down.
 
-#### `pipeline/` — chat → row writer + corrections
+#### `pipeline/` — chat orchestration
 
 - `ExpenseLogger.log(entry)` is the chat-side counterpart to
   `append_transactions`. It runs FX, ensures the right monthly tab
   exists, builds a `TransactionRow`, appends it, and triggers a
   recompute nudge on the affected monthly tab.
+- `RetrievalEngine.answer(query)` reads the master `Transactions`
+  ledger once, filters in Python by date window + category + vendor,
+  and returns a typed `RetrievalAnswer` with: total USD, transaction
+  count, per-category breakdown, per-day breakdown, the largest
+  matching row, and (for `query_recent`) the last N rows
+  newest-first. Reading from the ledger directly side-steps the
+  stale-formula-cache class of bug we already had to chase down on
+  the *write* side.
 - `CorrectionLogger.{peek_last,undo,edit}` operates on the
   bottom-most `Transactions` row. Amount edits re-run FX so
   `Amount (USD)` stays consistent. Both `undo` and `edit` end with the
   same recompute nudge.
 - `format_reply(turn)` is a pure function that produces the
-  user-facing reply string for any `ChatTurn`. The same string is
-  what the CLI prints and what Telegram sends.
+  user-facing reply string for any `ChatTurn`. It dispatches on the
+  turn's intent and on whether a `LogResult` / `RetrievalAnswer` /
+  error is attached. The same string is what the CLI prints and what
+  Telegram sends.
 - `ChatPipeline.chat(text)` orchestrates one full turn:
-  classify → extract → log/error/skip → format reply → persist.
+  classify → extract → (log expense **or** answer query) → format
+  reply → persist.
 
 #### `telegram_app/` — Telegram front-end
 
@@ -722,7 +737,10 @@ Every module has a focused test file. Highlights:
   reply formatting, `/edit` arg parser (single + multi-word
   categories, unparseable amounts).
 
-Run them: `pytest`. All 394 tests are offline.
+Run them: `pytest`. All 427 tests are offline.
+
+- `test_pipeline_retrieval.py` — `RetrievalEngine` parsing, filtering,
+  aggregation, multi-currency rollup, error wrapping.
 
 ---
 
@@ -759,12 +777,23 @@ expense --setup-year 2027 --overwrite           # destructive: rebuilds all 13 t
 
 ### Chat pipeline
 
+`--chat` is the universal entry point. It logs expenses *and*
+answers retrieval queries (Step 6) — the intent classifier picks
+the right path.
+
 ```bash
 expense --chat "spent 12.50 on coffee at starbucks today"
 expense --chat "paid 499 RS for netflix"
 expense --chat "thanks!"
-expense --chat "how much did I spend on food in april?"   # answered in Step 6
+expense --chat "how much did I spend on food in april?"
+expense --chat "how much in total in april 2026?"
+expense --chat "show me my last 5 expenses"
+expense --chat "what did I spend on 24 April?"
 ```
+
+For retrieval intents the CLI prints the structured `RetrievalAnswer`
+under the reply: window, total USD, transaction count, top categories,
+largest matching row, and any rows that failed to parse.
 
 ### Correction (undo / edit) — Step 7.1
 
@@ -1240,10 +1269,10 @@ to append a new column at the end and the existing rows stay valid
 | 4 | Sheets foundation (Transactions + monthly + YTD) | done |
 | 5 | Chat → row writer | done |
 | 5.1 | Schema reorder + visual emphasis polish | done |
-| 6 | **Sheets reader + retrieval queries** | **next** |
+| 6 | Sheets reader + retrieval queries | done |
 | 7 | Telegram bot front-end | done |
 | 7.1 | Self-healing + corrections (`/undo`, `/edit`) | done |
-| 8 | Polish (multi-turn clarification, weekly summaries) | pending |
+| 8 | **Polish (multi-turn clarification, weekly summaries)** | **next** |
 | ∞ | Hosting (Oracle Cloud Free Tier) | pending Noah's response |
 
 ### What "sellable" would require (out of current scope)

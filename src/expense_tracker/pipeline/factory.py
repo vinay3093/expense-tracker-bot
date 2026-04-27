@@ -16,6 +16,7 @@ from ..sheets.format import SheetFormat, get_sheet_format
 from .chat import ChatPipeline
 from .correction import CorrectionLogger
 from .logger import ExpenseLogger
+from .retrieval import RetrievalEngine
 
 
 def get_chat_pipeline(
@@ -60,10 +61,41 @@ def get_chat_pipeline(
         converter=converter,
     )
 
+    retrieval_engine = RetrievalEngine(
+        backend=backend,
+        sheet_format=fmt,
+        registry=registry,
+    )
+
     return ChatPipeline(
         orchestrator=orchestrator,
         expense_logger=expense_logger,
+        retrieval_engine=retrieval_engine,
         correction_logger=correction_logger,
+    )
+
+
+def get_retrieval_engine(
+    settings: Settings | None = None,
+    *,
+    fake: bool = False,
+    backend: SheetsBackend | None = None,
+    sheet_format: SheetFormat | None = None,
+) -> RetrievalEngine:
+    """Wire a standalone :class:`RetrievalEngine` for ad-hoc CLI use.
+
+    Mirrors :func:`get_correction_logger` but for the read side. The
+    engine never invokes the LLM; it just reads + filters + aggregates
+    the master ledger, so no orchestrator / converter is needed.
+    """
+    cfg = settings or get_settings()
+    fmt = sheet_format or get_sheet_format()
+    backend = backend or get_sheets_backend(cfg, fake=fake)
+    registry = get_registry()
+    return RetrievalEngine(
+        backend=backend,
+        sheet_format=fmt,
+        registry=registry,
     )
 
 
@@ -99,4 +131,8 @@ def get_correction_logger(
     )
 
 
-__all__ = ["get_chat_pipeline", "get_correction_logger"]
+__all__ = [
+    "get_chat_pipeline",
+    "get_correction_logger",
+    "get_retrieval_engine",
+]

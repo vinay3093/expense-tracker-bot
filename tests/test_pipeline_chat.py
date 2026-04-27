@@ -14,8 +14,9 @@ What we assert end-to-end:
   persisted *exactly once* with action + bot_reply populated.
 * smalltalk → no row, helpful reply, one turn persisted.
 * unclear → no row, hint reply, one turn persisted.
-* retrieval (any of the 4 query intents) → no row, Step-6 stub reply,
-  one turn persisted with the parsed query echoed back.
+* retrieval (any of the 4 query intents) → routed through
+  :class:`RetrievalEngine`, ledger is read + aggregated, reply quotes
+  totals, one turn persisted with a ``sheets_query`` action.
 * sheets failure (FX exploding) → ChatTurn carries the error, action
   status is "error", bot_reply tells the user what happened, one turn
   persisted, ``ok == False``.
@@ -37,6 +38,7 @@ from expense_tracker.llm._fake import FakeLLMClient
 from expense_tracker.pipeline.chat import ChatPipeline, ChatTurn
 from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import ExpenseLogger
+from expense_tracker.pipeline.retrieval import RetrievalEngine
 from expense_tracker.sheets.backend import FakeSheetsBackend
 from expense_tracker.sheets.currency import CurrencyConverter, CurrencyError
 from expense_tracker.sheets.format import get_sheet_format
@@ -90,7 +92,16 @@ def _build_pipeline(
         timezone=TZ,
         now=_frozen_now,
     )
-    pipeline = ChatPipeline(orchestrator=orch, expense_logger=expense_logger)
+    retrieval_engine = RetrievalEngine(
+        backend=backend,
+        sheet_format=fmt,
+        registry=registry,
+    )
+    pipeline = ChatPipeline(
+        orchestrator=orch,
+        expense_logger=expense_logger,
+        retrieval_engine=retrieval_engine,
+    )
     return pipeline, store, backend
 
 
@@ -241,7 +252,50 @@ def test_unclear_short_circuits(fake_llm, tmp_path):
     assert len(list(store.iter_turns())) == 1
 
 
-def test_retrieval_stub_acknowledges_query(fake_llm, tmp_path):
+def _seed_transactions(backend, fmt, *, rows):
+    """Populate the FakeSheetsBackend's Transactions tab for retrieval.
+
+    Goes through the real :func:`init_transactions_tab` so the schema
+    matches what the engine will read — header row, column types, and
+    column ordering.
+    """
+    from expense_tracker.sheets.transactions import (
+        TransactionRow,
+        append_transactions,
+        init_transactions_tab,
+    )
+    init_transactions_tab(backend, fmt)
+    txn_rows = []
+    for r in rows:
+        txn_rows.append(
+            TransactionRow(
+                date=r["date"],
+                day=r["date"].strftime("%a"),
+                month=r["date"].strftime("%B"),
+                year=r["date"].year,
+                category=r["category"],
+                note=r.get("note"),
+                vendor=r.get("vendor"),
+                amount=r["amount"],
+                currency=r.get("currency", "USD"),
+                amount_usd=r.get("amount_usd", r["amount"]),
+                fx_rate=r.get("fx_rate", 1.0),
+                source="chat",
+                trace_id=r.get("trace_id"),
+                timestamp=None,
+            )
+        )
+    append_transactions(backend, fmt, txn_rows)
+
+
+def test_retrieval_query_category_total_routes_through_engine(
+    fake_llm, tmp_path,
+):
+    """End-to-end: 'how much on food in april?' → engine reads the
+    Transactions tab, sums the matching rows, and the bot reply quotes
+    the total + count."""
+    from datetime import date as date_cls
+
     _queue_json(
         fake_llm,
         {
@@ -261,21 +315,171 @@ def test_retrieval_stub_acknowledges_query(fake_llm, tmp_path):
             "limit": None,
         },
     )
-    pipeline, store, _backend = _build_pipeline(fake_llm, log_dir=tmp_path)
+    pipeline, store, backend = _build_pipeline(fake_llm, log_dir=tmp_path)
+    fmt = get_sheet_format()
+
+    _seed_transactions(backend, fmt, rows=[
+        {"date": date_cls(2026, 4, 5),  "category": "Food",
+         "amount": 12.50, "vendor": "Starbucks", "note": "coffee"},
+        {"date": date_cls(2026, 4, 18), "category": "Food",
+         "amount": 45.00, "vendor": "Chipotle", "note": "lunch"},
+        # Out of category — must be excluded.
+        {"date": date_cls(2026, 4, 18), "category": "Groceries",
+         "amount": 88.00, "vendor": "Costco"},
+        # Out of window — must be excluded.
+        {"date": date_cls(2026, 3, 30), "category": "Food",
+         "amount": 100.00, "vendor": "Capital Grille"},
+    ])
 
     turn = pipeline.chat("how much for food in april?")
 
     assert turn.ok is True
     assert turn.log_result is None
+    assert turn.retrieval_error is None
+    assert turn.retrieval_answer is not None
     assert turn.intent.value == "query_category_total"
-    assert "Step 6" in turn.bot_reply
-    assert "April 2026" in turn.bot_reply
-    assert "Food" in turn.bot_reply
 
+    answer = turn.retrieval_answer
+    assert answer.transaction_count == 2
+    assert answer.total_usd == pytest.approx(57.50)
+    assert answer.by_category == {"Food": 57.50}
+    assert answer.largest is not None
+    assert answer.largest.amount_usd == pytest.approx(45.0)
+    assert answer.largest.vendor == "Chipotle"
+
+    # Friendly reply quotes the total + window + largest.
+    assert "April 2026 / Food" in turn.bot_reply
+    assert "$57.50" in turn.bot_reply
+    assert "2 transactions" in turn.bot_reply
+    assert "Chipotle" in turn.bot_reply
+
+    # Conversation turn persisted with the structured action shape.
     persisted = next(iter(store.iter_turns()))
-    assert persisted.action is None
+    assert persisted.intent == "query_category_total"
+    assert persisted.action is not None
+    assert persisted.action["type"] == "sheets_query"
+    assert persisted.action["status"] == "ok"
+    assert persisted.action["total_usd"] == pytest.approx(57.50)
+    assert persisted.action["transaction_count"] == 2
     assert persisted.extracted is not None
     assert persisted.extracted["type"] == "query"
+
+
+def test_retrieval_query_period_total_aggregates_full_window(
+    fake_llm, tmp_path,
+):
+    """A period-total query sums *every* category and lists the top."""
+    from datetime import date as date_cls
+
+    _queue_json(
+        fake_llm,
+        {"intent": "query_period_total", "confidence": 0.9, "reasoning": "month total"},
+        {
+            "intent": "query_period_total",
+            "time_range": {
+                "start": "2026-04-01",
+                "end": "2026-04-30",
+                "label": "April 2026",
+            },
+            "category": None,
+            "vendor": None,
+            "limit": None,
+        },
+    )
+    pipeline, _store, backend = _build_pipeline(fake_llm, log_dir=tmp_path)
+    fmt = get_sheet_format()
+
+    _seed_transactions(backend, fmt, rows=[
+        {"date": date_cls(2026, 4, 5),  "category": "Food",      "amount": 12.50},
+        {"date": date_cls(2026, 4, 8),  "category": "Groceries", "amount": 88.00},
+        {"date": date_cls(2026, 4, 18), "category": "Food",      "amount": 45.00},
+        {"date": date_cls(2026, 4, 22), "category": "Tesla Car", "amount": 240.00},
+    ])
+
+    turn = pipeline.chat("how much in april?")
+
+    assert turn.ok is True
+    answer = turn.retrieval_answer
+    assert answer is not None
+    assert answer.transaction_count == 4
+    assert answer.total_usd == pytest.approx(385.50)
+    assert answer.by_category == {
+        "Food": 57.50, "Groceries": 88.00, "Tesla Car": 240.00,
+    }
+    # Reply lists top categories with totals.
+    assert "$385.50" in turn.bot_reply
+    assert "Tesla Car $240.00" in turn.bot_reply
+
+
+def test_retrieval_query_recent_returns_top_n_only(fake_llm, tmp_path):
+    """`query_recent` slices to the last N rows but counts the full window."""
+    from datetime import date as date_cls
+
+    _queue_json(
+        fake_llm,
+        {"intent": "query_recent", "confidence": 0.9, "reasoning": "show recent"},
+        {
+            "intent": "query_recent",
+            "time_range": {
+                "start": "2026-04-01",
+                "end": "2026-04-30",
+                "label": "April 2026",
+            },
+            "category": None,
+            "vendor": None,
+            "limit": 3,
+        },
+    )
+    pipeline, _store, backend = _build_pipeline(fake_llm, log_dir=tmp_path)
+    fmt = get_sheet_format()
+
+    _seed_transactions(backend, fmt, rows=[
+        {"date": date_cls(2026, 4, d), "category": "Food",
+         "amount": 10.0 + d, "vendor": f"V{d}"}
+        for d in (5, 8, 12, 18, 24, 26)
+    ])
+
+    turn = pipeline.chat("show last 3 transactions")
+
+    assert turn.ok is True
+    answer = turn.retrieval_answer
+    assert answer is not None
+    assert answer.transaction_count == 6  # full window
+    assert len(answer.matched_rows) == 3  # truncated to limit
+    # Sorted newest-first.
+    assert [r.date.day for r in answer.matched_rows] == [26, 24, 18]
+    assert "Last 3" in turn.bot_reply
+    assert "of 6 in April 2026" in turn.bot_reply
+
+
+def test_retrieval_empty_window_says_no_matches(fake_llm, tmp_path):
+    """Query with no matching rows yields a 'no expenses found' reply."""
+    _queue_json(
+        fake_llm,
+        {"intent": "query_period_total", "confidence": 0.9, "reasoning": "month total"},
+        {
+            "intent": "query_period_total",
+            "time_range": {
+                "start": "2026-04-01",
+                "end": "2026-04-30",
+                "label": "April 2026",
+            },
+            "category": None,
+            "vendor": None,
+            "limit": None,
+        },
+    )
+    pipeline, _store, _backend = _build_pipeline(fake_llm, log_dir=tmp_path)
+
+    turn = pipeline.chat("how much in april?")
+
+    assert turn.ok is True
+    answer = turn.retrieval_answer
+    assert answer is not None
+    assert answer.transaction_count == 0
+    assert answer.total_usd == 0.0
+    assert "No expenses found" in turn.bot_reply
+    assert "April 2026" in turn.bot_reply
 
 
 # ─── Failure paths ──────────────────────────────────────────────────────
