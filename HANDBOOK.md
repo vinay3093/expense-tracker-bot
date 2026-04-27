@@ -496,8 +496,10 @@ The bot starts long-polling. From your phone:
 - `/whoami` — your numeric Telegram user ID.
 
 **Important caveat:** the bot only runs while `expense --telegram` is
-running on the laptop. Close the laptop, the bot stops. To run 24/7
-you need a hosted machine — see §16.
+running on the laptop. Close the laptop, the bot stops. To run 24/7,
+deploy to Oracle Cloud Free Tier — full runbook in
+[`deploy/oracle/DEPLOY.md`](./deploy/oracle/DEPLOY.md) (see §16
+Roadmap).
 
 ---
 
@@ -602,6 +604,12 @@ expense-tracker-bot/
 │       ├── auth.py             ← parse_allowed_users + Authorizer (no SDK imports)
 │       ├── bot.py              ← MessageProcessor + CorrectionProcessor + SummaryProcessor + handler factories
 │       └── factory.py          ← build_application + run_polling
+├── deploy/oracle/            ← Oracle Cloud Free Tier deploy bundle (Step 9)
+│   ├── DEPLOY.md               ← step-by-step runbook (signup -> systemd-managed bot)
+│   ├── README.md               ← TL;DR + folder index
+│   ├── setup.sh                ← idempotent first-time bootstrap on the VM
+│   ├── update.sh               ← git pull + reinstall + restart helper
+│   └── expense-bot.service     ← hardened systemd unit (auto-restart, journald, ProtectHome)
 └── tests/                    ← 476 tests, all offline
     ├── conftest.py             ← isolated_env / fake_llm fixtures
     └── test_*.py               ← One per module, plus integration tests
@@ -1332,7 +1340,7 @@ to append a new column at the end and the existing rows stay valid
 | 8b | `--healthcheck`: ping LLM, FX, Sheets, Telegram in one shot | next |
 | 8c | Built-in size-based rotation for `logs/llm_calls.jsonl` + `logs/conversations.jsonl` | next |
 | 8d | Multi-turn clarification (when intent is `unclear`) | pending |
-| ∞ | Hosting (Oracle Cloud Free Tier) | pending Noah's response |
+| 9 | Hosting on Oracle Cloud Free Tier — deploy bundle (`deploy/oracle/`: `DEPLOY.md`, `setup.sh`, `update.sh`, `expense-bot.service`) | runbook ready, awaiting OCI signup |
 
 ### What "sellable" would require (out of current scope)
 

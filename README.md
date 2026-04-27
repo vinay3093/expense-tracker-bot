@@ -629,9 +629,16 @@ expense-tracker-bot/
 │       │   └── __init__.py         ← public API
 │       └── telegram_app/         # Telegram bot front-end (Step 7)
 │           ├── auth.py             ← parse_allowed_users + Authorizer (no SDK)
-│           ├── bot.py              ← MessageProcessor + CorrectionProcessor + async handler factories
+│           ├── bot.py              ← MessageProcessor + CorrectionProcessor + SummaryProcessor + async handler factories
 │           ├── factory.py          ← build_application() / run_polling()
 │           └── __init__.py
+├── deploy/
+│   └── oracle/                  # Oracle Cloud Free Tier hosting bundle (Step 9)
+│       ├── DEPLOY.md              ← step-by-step runbook (signup → systemd-managed bot)
+│       ├── README.md              ← TL;DR + folder index
+│       ├── setup.sh               ← idempotent first-time bootstrap (run on the VM)
+│       ├── update.sh              ← git pull + reinstall + restart helper
+│       └── expense-bot.service    ← hardened systemd unit (auto-restart, journald, ProtectHome)
 └── tests/
     ├── conftest.py              # isolated_env, fake_llm fixtures
     ├── test_config.py
@@ -683,6 +690,7 @@ expense-tracker-bot/
 8b. **Healthcheck** — `expense --healthcheck` will ping LLM, FX, Sheets, and Telegram in one shot.
 8c. **Log rotation** — built-in size-based rotation for `logs/llm_calls.jsonl` and `logs/conversations.jsonl`.
 8d. **Multi-turn clarification** — when intent classifier returns `unclear`, ask one targeted follow-up question instead of giving up.
+9. **Hosting on Oracle Cloud Free Tier** — `deploy/oracle/` bundle: step-by-step `DEPLOY.md` runbook, idempotent `setup.sh` bootstrap, `update.sh` for ongoing deploys, and a hardened `expense-bot.service` systemd unit (auto-restart on crash, survives reboot, journald log streaming, 512 MB memory cap, `ProtectHome=read-only`). Long-polling Telegram = no inbound port / TLS / domain needed. **(runbook ready — pending OCI signup)**
 
 ## Running it
 

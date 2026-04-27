@@ -1,0 +1,63 @@
+###############################################################################
+# expense-bot.service — runs `expense --telegram` 24/7 under systemd
+#
+# Place at:    /etc/systemd/system/expense-bot.service
+# Then:        sudo systemctl daemon-reload
+#              sudo systemctl enable --now expense-bot
+#              sudo journalctl -u expense-bot -f      # tail logs
+#
+# Assumes the layout that deploy/oracle/setup.sh produces:
+#   /home/ubuntu/expense-tracker-bot/                ← git clone
+#   /home/ubuntu/expense-tracker-bot/.venv/          ← virtualenv
+#   /home/ubuntu/expense-tracker-bot/.env            ← secrets (chmod 600)
+#   /home/ubuntu/expense-tracker-bot/secrets/        ← service-account.json
+#   /home/ubuntu/expense-tracker-bot/logs/           ← jsonl traces
+#
+# If you put the repo somewhere else, edit the three paths below.
+###############################################################################
+
+[Unit]
+Description=Expense Tracker Telegram Bot (long-polling)
+# Wait for the network to be online so the first Telegram poll succeeds.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+WorkingDirectory=/home/ubuntu/expense-tracker-bot
+ExecStart=/home/ubuntu/expense-tracker-bot/.venv/bin/expense --telegram
+
+# pydantic-settings loads `.env` from the WorkingDirectory automatically,
+# so we don't need EnvironmentFile= here.
+
+# Restart on crash, but don't hammer Telegram if something is fundamentally
+# wrong (e.g. revoked token).  10 failures in 5 minutes -> stop trying.
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Modest resource caps — the bot is tiny.  Adjust if you ever co-host
+# something heavier on the same VM.
+MemoryMax=512M
+CPUQuota=50%
+
+# Stream stdout/stderr to journald so `journalctl -u expense-bot -f` works.
+StandardOutput=journal
+StandardError=journal
+
+# Light hardening — none of this is required, but it's free.
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=read-only
+# The bot needs to APPEND to JSONL traces and the FX cache file, both of
+# which live in logs/.  ReadWritePaths re-grants write access to that one
+# directory after ProtectHome locks the rest of /home down.
+ReadWritePaths=/home/ubuntu/expense-tracker-bot/logs
+
+[Install]
+WantedBy=multi-user.target
