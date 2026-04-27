@@ -1,0 +1,63 @@
+---
+description: Keep HANDBOOK.md (and HANDBOOK.docx) in sync with code changes
+alwaysApply: true
+---
+
+# Keep HANDBOOK.md current
+
+`HANDBOOK.md` is the project's single source of truth for setup,
+architecture, configuration, and daily usage. It must never go stale.
+
+## When to update HANDBOOK.md
+
+Update it **in the same commit** whenever the change touches any of:
+
+- A new or renamed `.env` variable → update §4.2
+- New CLI flag or behaviour change → update §7
+- New Telegram command or behaviour change → update §8
+- Schema change to `Transactions` columns → update §9.1
+- New monthly / YTD layout element → update §9.2 / §9.3
+- New / renamed / hint-changed category → update §9.4
+- New external service or API dependency → update §3 + §5
+- New module or major file → update §6 (module guide + tree)
+- New troubleshooting case observed → add to §14
+- Roadmap status change → update §16
+
+## Always-do checklist
+
+After editing `HANDBOOK.md`:
+
+1. Bump the "Last updated" line at the top to today's date and the
+   current commit short-SHA (placeholder is fine; the commit will
+   give it the real SHA on push).
+2. Rebuild the Word version:
+
+   ```bash
+   python scripts/build_handbook.py
+   ```
+
+3. Stage **both** `HANDBOOK.md` and `HANDBOOK.docx`.
+
+## What not to do
+
+- Do not edit `HANDBOOK.docx` by hand — it is regenerated from
+  markdown.
+- Do not delete sections to "shorten" the handbook. Keep all
+  sections; mark obsolete ones explicitly.
+- Do not put real secrets (bot tokens, API keys, sheet IDs, user
+  IDs) in the handbook. Use placeholders like
+  `expense-bot@expense-bot-481234.iam.gserviceaccount.com`.
+
+## Concrete example
+
+Adding a `--export-csv` CLI flag:
+
+```diff
+ ## 7. CLI reference — every flag
+ ...
+ ### Sheets management
+ ...
++expense --export-csv 2026-04 --out april.csv  # dump a month to CSV
+```
+
+Then run `python scripts/build_handbook.py` and stage both files.

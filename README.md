@@ -14,6 +14,15 @@ column totals at the bottom. The same bot also answers retrieval questions
 > the way in, and re-converted on amount edits. Step 6 (retrieval
 > queries) is the next milestone.
 
+> **Full project handbook:** [`HANDBOOK.md`](./HANDBOOK.md) — the
+> zero-to-running guide covering every external setup step (Google
+> Cloud project, service-account JSON, sheet sharing, Groq key,
+> BotFather, allow-list bootstrap), every `.env` variable, the
+> module-by-module code tour, the data model, FX rates, logs, the
+> self-healing flow, daily cookbook, and troubleshooting. A
+> downloadable Word version is at [`HANDBOOK.docx`](./HANDBOOK.docx)
+> (rebuild via `python scripts/build_handbook.py` after edits).
+
 ## Why this exists
 
 Right now I track expenses manually in Google Sheets every month. It works

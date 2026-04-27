@@ -54,6 +54,9 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "python-telegram-bot>=21.6,<22.0",
+    # Bundles a pandoc binary so `python scripts/build_handbook.py`
+    # works without a system-wide pandoc install.
+    "pypandoc-binary>=1.13",
 ]
 
 [project.scripts]
