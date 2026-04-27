@@ -17,6 +17,7 @@ from .chat import ChatPipeline
 from .correction import CorrectionLogger
 from .logger import ExpenseLogger
 from .retrieval import RetrievalEngine
+from .summary import SummaryEngine
 
 
 def get_chat_pipeline(
@@ -99,6 +100,31 @@ def get_retrieval_engine(
     )
 
 
+def get_summary_engine(
+    settings: Settings | None = None,
+    *,
+    fake: bool = False,
+    backend: SheetsBackend | None = None,
+    sheet_format: SheetFormat | None = None,
+    retrieval_engine: RetrievalEngine | None = None,
+) -> SummaryEngine:
+    """Wire a standalone :class:`SummaryEngine` for ``--summary`` /
+    ``/summary`` callers.
+
+    Builds a :class:`RetrievalEngine` under the hood (or accepts an
+    existing one) so the focal-window + prior-window reads share the
+    same ledger parsing semantics. ``today_provider`` defaults to
+    :func:`datetime.date.today`; tests inject a fixed anchor.
+    """
+    cfg = settings or get_settings()
+    fmt = sheet_format or get_sheet_format()
+    backend = backend or get_sheets_backend(cfg, fake=fake)
+    retrieval_engine = retrieval_engine or get_retrieval_engine(
+        cfg, fake=fake, backend=backend, sheet_format=fmt,
+    )
+    return SummaryEngine(retrieval_engine=retrieval_engine)
+
+
 def get_correction_logger(
     settings: Settings | None = None,
     *,
@@ -135,4 +161,5 @@ __all__ = [
     "get_chat_pipeline",
     "get_correction_logger",
     "get_retrieval_engine",
+    "get_summary_engine",
 ]

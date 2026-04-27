@@ -37,6 +37,13 @@ from ..pipeline.correction import (
     EditResult,
     UndoResult,
 )
+from ..pipeline.retrieval import RetrievalError
+from ..pipeline.summary import (
+    Summary,
+    SummaryEngine,
+    SummaryScope,
+    format_summary,
+)
 from ..sheets.transactions import LastRow
 from .auth import AuthDecision, Authorizer
 
@@ -66,7 +73,11 @@ _WELCOME_TEXT = (
     "  /undo                  delete the last logged expense\n"
     "  /edit amount 50        change the amount to 50\n"
     "  /edit category Food    change the category (aliases OK)\n"
-    "  /last                  show the last entry without changing it"
+    "  /last                  show the last entry without changing it\n\n"
+    "See how you're tracking:\n"
+    "  /summary               last 7 days vs the 7 before that\n"
+    "  /summary month         this month so far vs last month thru same day\n"
+    "  /summary year          year-to-date vs last year thru same date"
 )
 
 
@@ -375,6 +386,112 @@ _EDIT_USAGE_REPLY = (
 )
 
 
+# ─── Summary processor (/summary [week|month|year]) ─────────────────────
+
+# Mirrors the :class:`MessageProcessor` / :class:`CorrectionProcessor`
+# pattern: pure-Python wrapper that takes raw Telegram args and returns
+# a string. The Telegram-SDK glue below stays trivially testable.
+
+_SUMMARY_USAGE_REPLY = (
+    "Usage:\n"
+    "  /summary             default — last 7 days vs the 7 before\n"
+    "  /summary week        same as default\n"
+    "  /summary month       this month so far vs last month thru same day\n"
+    "  /summary year        year-to-date vs same period last year"
+)
+
+_SUMMARY_FAILED_TEMPLATE = (
+    "Sorry — couldn't read the ledger to build that summary.\n"
+    "Reason: {reason}\n"
+    "Try again in a moment, or run `expense --whoami` from the laptop "
+    "to check the connection."
+)
+
+
+class SummaryProcessor:
+    """Pure-Python orchestrator for /summary Telegram turns.
+
+    Constructed with an :class:`Authorizer` and an optional
+    :class:`SummaryEngine` (optional so tests / dev modes that don't
+    wire the engine still get a friendly "feature not configured"
+    reply rather than a crash).
+    """
+
+    def __init__(
+        self,
+        *,
+        authorizer: Authorizer,
+        engine: SummaryEngine | None,
+    ) -> None:
+        self._auth = authorizer
+        self._engine = engine
+
+    def process(self, *, user_id: int | None, args_text: str) -> str:
+        denied = self._maybe_deny(user_id)
+        if denied is not None:
+            return denied
+        if self._engine is None:
+            return self._unconfigured_reply()
+
+        scope_or_err = _parse_summary_args(args_text)
+        # Order matters: ``SummaryScope`` extends ``str`` so the
+        # ``isinstance(..., str)`` form would match the success case
+        # too. Check the enum first.
+        if not isinstance(scope_or_err, SummaryScope):
+            return scope_or_err  # parse error string
+        scope = scope_or_err
+
+        try:
+            summary = self._engine.summarize(scope)
+        except RetrievalError as exc:
+            _log.warning("/summary failed: %s", exc)
+            return _SUMMARY_FAILED_TEMPLATE.format(reason=str(exc))
+
+        return _format_summary_for_telegram(summary)
+
+    def _maybe_deny(self, user_id: int | None) -> str | None:
+        decision = self._auth.check(user_id)
+        if not decision.allowed:
+            return _format_auth_denied(decision)
+        return None
+
+    @staticmethod
+    def _unconfigured_reply() -> str:
+        return (
+            "Summaries aren't configured for this bot. "
+            "Re-run `expense --telegram` from the laptop."
+        )
+
+
+def _parse_summary_args(args_text: str) -> SummaryScope | str:
+    """Parse ``/summary ...`` payload into a :class:`SummaryScope`.
+
+    Empty payload defaults to ``WEEK`` (the most useful weekly check-in).
+    Returns a usage string for unknown scope words so the user learns
+    the surface without needing to read the help.
+    """
+    cleaned = args_text.strip().lower()
+    if not cleaned:
+        return SummaryScope.WEEK
+    head = cleaned.split()[0]
+    if head in ("week", "weekly", "w", "7d"):
+        return SummaryScope.WEEK
+    if head in ("month", "monthly", "m"):
+        return SummaryScope.MONTH
+    if head in ("year", "yearly", "ytd", "y"):
+        return SummaryScope.YEAR
+    return f"Couldn't parse `{head}` as a scope.\n\n{_SUMMARY_USAGE_REPLY}"
+
+
+def _format_summary_for_telegram(summary: Summary) -> str:
+    """Two-line phone-friendly summary built atop :func:`format_summary`.
+
+    The ``compact=True`` form fits on one screen; we preserve the
+    multi-line CLI form for the laptop. Same data either way.
+    """
+    return format_summary(summary, compact=True)
+
+
 # ─── Telegram-SDK glue ──────────────────────────────────────────────────
 
 # Below this line we touch the SDK. Kept small and at the bottom so the
@@ -549,6 +666,39 @@ def make_edit_handler(processor: CorrectionProcessor):
     return handle_edit
 
 
+def make_summary_handler(processor: SummaryProcessor):
+    """``/summary [week|month|year]`` — period rollup with comparison.
+
+    Same args-parsing dance as :func:`make_edit_handler`: strip the
+    leading ``/summary`` (and optional ``@bot_username``) before
+    handing the rest to the processor.
+    """
+
+    async def handle_summary(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        msg = update.effective_message
+        if msg is None or msg.text is None:
+            return
+        text = msg.text.strip()
+        space_idx = text.find(" ")
+        args_text = text[space_idx + 1 :] if space_idx >= 0 else ""
+
+        await _send_typing(update)
+        reply = await asyncio.to_thread(
+            processor.process,
+            user_id=user_id,
+            args_text=args_text,
+        )
+        await _reply_safely(update, reply)
+
+    return handle_summary
+
+
 def _format_auth_denied(decision: AuthDecision) -> str:
     """User-facing message for an auth-rejected update."""
     if decision.user_id is None:
@@ -567,9 +717,11 @@ __all__ = [
     "CorrectionProcessor",
     "MessageProcessor",
     "ProcessedMessage",
+    "SummaryProcessor",
     "make_edit_handler",
     "make_last_handler",
     "make_start_handler",
+    "make_summary_handler",
     "make_text_handler",
     "make_undo_handler",
     "make_whoami_handler",

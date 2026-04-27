@@ -1,6 +1,6 @@
 # Expense Tracker Bot — Project Handbook
 
-> **Last updated:** 2026-04-27 · **Code version:** Step 6.1 (retrieval polish)
+> **Last updated:** 2026-04-27 · **Code version:** Step 8a (summaries)
 >
 > A complete top-to-bottom guide to this project: what it is, how every
 > external service was set up, what every line of configuration does,
@@ -589,19 +589,20 @@ expense-tracker-bot/
 │   │   ├── factory.py          ← get_sheets_backend()
 │   │   ├── exceptions.py       ← SheetsError hierarchy
 │   │   └── data/sheet_format.yaml
-│   ├── pipeline/             ← Chat orchestration (Steps 5, 6, 7.1)
+│   ├── pipeline/             ← Chat orchestration (Steps 5, 6, 7.1, 8a)
 │   │   ├── logger.py           ← ExpenseLogger: FX + ensure_tab + append + recompute nudge
 │   │   ├── retrieval.py        ← RetrievalEngine: read ledger + filter + aggregate
+│   │   ├── summary.py          ← SummaryEngine: week/month/year rollups w/ prior-period delta
 │   │   ├── correction.py       ← CorrectionLogger: undo / edit / re-FX / nudge
 │   │   ├── reply.py            ← format_reply() — pure user-facing reply builder
 │   │   ├── chat.py             ← ChatPipeline + ChatTurn
-│   │   ├── factory.py          ← get_chat_pipeline / get_correction_logger / get_retrieval_engine
+│   │   ├── factory.py          ← get_chat_pipeline / get_correction_logger / get_retrieval_engine / get_summary_engine
 │   │   └── exceptions.py       ← PipelineError / ExpenseLogError / RetrievalError / CorrectionError
-│   └── telegram_app/         ← Telegram front-end (Step 7)
+│   └── telegram_app/         ← Telegram front-end (Steps 7, 7.1, 8a)
 │       ├── auth.py             ← parse_allowed_users + Authorizer (no SDK imports)
-│       ├── bot.py              ← MessageProcessor + CorrectionProcessor + handler factories
+│       ├── bot.py              ← MessageProcessor + CorrectionProcessor + SummaryProcessor + handler factories
 │       └── factory.py          ← build_application + run_polling
-└── tests/                    ← 427 tests, all offline
+└── tests/                    ← 476 tests, all offline
     ├── conftest.py             ← isolated_env / fake_llm fixtures
     └── test_*.py               ← One per module, plus integration tests
 ```
@@ -697,6 +698,15 @@ in §9.
   newest-first. Reading from the ledger directly side-steps the
   stale-formula-cache class of bug we already had to chase down on
   the *write* side.
+- `SummaryEngine.summarize(scope, anchor)` builds a "where am I this
+  week / month / year?" rollup. It composes two `RetrievalEngine`
+  calls — one for the focal window, one for the apples-to-apples prior
+  window — and returns a `Summary` with both sides, a delta, top
+  categories, biggest expense, and active-day count. Window arithmetic
+  handles month-end and leap-year edge cases (`2024-02-29` → prior
+  year compared at `2023-02-28`). `format_summary(summary, mode=...)`
+  renders it for either the CLI (verbose multi-line) or Telegram
+  (compact single-block).
 - `CorrectionLogger.{peek_last,undo,edit}` operates on the
   bottom-most `Transactions` row. Amount edits re-run FX so
   `Amount (USD)` stays consistent. Both `undo` and `edit` end with the
@@ -719,6 +729,11 @@ in §9.
   chat pipeline on a worker thread, and returns a reply string.
 - `CorrectionProcessor.process_{last,undo,edit}` is the parallel for
   `/last` / `/undo` / `/edit`. Same auth + same return shape.
+- `SummaryProcessor.process(user_id, args_text)` is the parallel for
+  `/summary [week|month|year]`. It auth-gates, parses the argument
+  (defaults to `week`), calls `SummaryEngine.summarize`, and returns
+  a Telegram-shaped reply. Errors from the engine are converted to a
+  friendly one-liner — the chat never sees a stack trace.
 - `bot.py` exposes `make_*_handler` factories that wrap the
   processors in `async def(update, context)` callbacks the Telegram
   SDK expects.
@@ -796,6 +811,19 @@ For retrieval intents the CLI prints the structured `RetrievalAnswer`
 under the reply: window, total USD, transaction count, top categories,
 largest matching row, and any rows that failed to parse.
 
+### Summaries — Step 8a
+
+```bash
+expense --summary week     # last 7 days vs previous 7 days
+expense --summary month    # current month-to-date vs same days of prior month
+expense --summary year     # current year-to-date vs same calendar window in prior year
+```
+
+Each summary shows the focal-period total, transaction count, top 3
+categories with percentages, the single biggest expense, days active in
+the window, and the apples-to-apples prior-period delta (absolute and
+percentage). Honours `--fake` for offline / sample-data runs.
+
 ### Correction (undo / edit) — Step 7.1
 
 ```bash
@@ -827,6 +855,10 @@ expense --telegram --fake # offline mode — useful for testing the bot loop
 /edit amount 50.25          → decimals OK
 /edit category Food         → change the category of the last row
 /edit category India Expense→ multi-word categories supported
+/summary                    → weekly summary (last 7 days vs previous 7)
+/summary week               → same as /summary
+/summary month              → month-to-date vs same days of prior month
+/summary year               → year-to-date vs same calendar window prior year
 ```
 
 All commands except `/whoami` require the caller's user ID to be in
@@ -1133,6 +1165,28 @@ Or to delete entirely:
 /undo
 ```
 
+### Periodic review — Step 8a
+
+Fastest path is from chat / Telegram itself:
+
+```
+/summary           ← weekly: last 7 days vs previous 7
+/summary month     ← month-to-date vs same days of prior month
+/summary year      ← year-to-date vs same days of prior year
+```
+
+CLI mirror with extra detail (top categories with %, days active,
+biggest single expense):
+
+```bash
+expense --summary week
+expense --summary month
+expense --summary year
+```
+
+Both backends share the same `SummaryEngine`, so the numbers always
+agree.
+
 ### Monthly review (manual, pre-Step 6)
 
 Open the sheet → switch to the current monthly tab. Daily grid shows
@@ -1274,7 +1328,10 @@ to append a new column at the end and the existing rows stay valid
 | 6.1 | Retrieval polish: pluralized replies, locale-tolerant amount parsing (`"1,000.00"`), `--inspect-ledger` diagnostic, sharper `query_recent` prompt | done |
 | 7 | Telegram bot front-end | done |
 | 7.1 | Self-healing + corrections (`/undo`, `/edit`) | done |
-| 8 | **Polish (weekly summaries, healthcheck, log rotation, multi-turn clarification)** | **next** |
+| 8a | Period summaries: `--summary` CLI + `/summary` Telegram (week / month / year + prior-period delta) | done |
+| 8b | `--healthcheck`: ping LLM, FX, Sheets, Telegram in one shot | next |
+| 8c | Built-in size-based rotation for `logs/llm_calls.jsonl` + `logs/conversations.jsonl` | next |
+| 8d | Multi-turn clarification (when intent is `unclear`) | pending |
 | ∞ | Hosting (Oracle Cloud Free Tier) | pending Noah's response |
 
 ### What "sellable" would require (out of current scope)

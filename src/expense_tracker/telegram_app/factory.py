@@ -20,13 +20,16 @@ from ..config import Settings, get_settings
 from ..pipeline.chat import ChatPipeline
 from ..pipeline.correction import CorrectionLogger
 from ..pipeline.factory import get_chat_pipeline
+from ..pipeline.summary import SummaryEngine
 from .auth import Authorizer, parse_allowed_users
 from .bot import (
     CorrectionProcessor,
     MessageProcessor,
+    SummaryProcessor,
     make_edit_handler,
     make_last_handler,
     make_start_handler,
+    make_summary_handler,
     make_text_handler,
     make_undo_handler,
     make_whoami_handler,
@@ -86,6 +89,33 @@ def build_correction_processor(
     return CorrectionProcessor(authorizer=authorizer, corrector=corrector)
 
 
+def build_summary_processor(
+    settings: Settings | None = None,
+    *,
+    pipeline: ChatPipeline | None = None,
+    engine: SummaryEngine | None = None,
+    fake: bool = False,
+) -> SummaryProcessor:
+    """Build a :class:`SummaryProcessor` for /summary.
+
+    Pulls the :class:`SummaryEngine` from the chat pipeline's existing
+    :class:`RetrievalEngine` so all three Telegram processors share
+    the same Sheets client, FX cache, and parsing semantics.
+    """
+    cfg = settings or get_settings()
+    authorizer = Authorizer(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
+    if engine is not None:
+        return SummaryProcessor(authorizer=authorizer, engine=engine)
+    chat_pipeline = pipeline or get_chat_pipeline(cfg, fake=fake)
+    retriever = chat_pipeline.retriever
+    if retriever is None:
+        return SummaryProcessor(authorizer=authorizer, engine=None)
+    return SummaryProcessor(
+        authorizer=authorizer,
+        engine=SummaryEngine(retrieval_engine=retriever),
+    )
+
+
 def build_application(
     settings: Settings | None = None,
     *,
@@ -133,6 +163,9 @@ def build_application(
     correction_processor = build_correction_processor(
         cfg, pipeline=chat_pipeline, fake=fake,
     )
+    summary_processor = build_summary_processor(
+        cfg, pipeline=chat_pipeline, fake=fake,
+    )
 
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", make_start_handler()))
@@ -141,6 +174,7 @@ def build_application(
     app.add_handler(CommandHandler("last", make_last_handler(correction_processor)))
     app.add_handler(CommandHandler("undo", make_undo_handler(correction_processor)))
     app.add_handler(CommandHandler("edit", make_edit_handler(correction_processor)))
+    app.add_handler(CommandHandler("summary", make_summary_handler(summary_processor)))
     # Text messages that aren't commands flow through the chat pipeline.
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, make_text_handler(processor))
@@ -173,5 +207,6 @@ __all__ = [
     "build_application",
     "build_correction_processor",
     "build_processor",
+    "build_summary_processor",
     "run_polling",
 ]

@@ -43,6 +43,7 @@ from .factory import (
     get_chat_pipeline,
     get_correction_logger,
     get_retrieval_engine,
+    get_summary_engine,
 )
 from .logger import ExpenseLogger, LogResult
 from .reply import format_reply
@@ -53,6 +54,12 @@ from .retrieval import (
     RetrievalEngine,
     RetrievalError,
     SkippedRow,
+)
+from .summary import (
+    Summary,
+    SummaryEngine,
+    SummaryScope,
+    format_summary,
 )
 
 __all__ = [
@@ -72,9 +79,14 @@ __all__ = [
     "RetrievalEngine",
     "RetrievalError",
     "SkippedRow",
+    "Summary",
+    "SummaryEngine",
+    "SummaryScope",
     "UndoResult",
     "format_reply",
+    "format_summary",
     "get_chat_pipeline",
     "get_correction_logger",
     "get_retrieval_engine",
+    "get_summary_engine",
 ]

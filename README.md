@@ -6,13 +6,15 @@ manually — one row per day, one column per category, daily totals on the right
 column totals at the bottom. The same bot also answers retrieval questions
 ("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
 
-> **Status:** Step 6 — retrieval queries are live. Logging, correcting,
-> *and* asking ("how much did I spend on food in April?", "show last 5
-> expenses", "what did I spend on 24 Apr?") all flow through the same
+> **Status:** Step 8a — period summaries are live. Logging, correcting,
+> asking ("how much did I spend on food in April?", "show last 5
+> expenses", "what did I spend on 24 Apr?"), *and* rolling up
+> (`expense --summary week|month|year`, `/summary` on Telegram, with
+> apples-to-apples prior-period delta) all flow through the same
 > chat pipeline — over CLI (`expense --chat …`) or Telegram. Foreign
 > currencies (e.g. INR) are converted to USD on the way in, re-converted
-> on amount edits, and aggregated in USD on the way out. Next up: Step 8
-> polish (multi-turn clarification, weekly summaries).
+> on amount edits, and aggregated in USD on the way out. Next up: Step 8b
+> healthcheck and Step 8c log rotation.
 
 > **Full project handbook:** [`HANDBOOK.md`](./HANDBOOK.md) — the
 > zero-to-running guide covering every external setup step (Google
@@ -411,6 +413,11 @@ expense --chat "how much in total in april 2026?"
 expense --chat "show me my last 5 expenses"
 expense --chat "what did I spend on 24 April?"
 
+# Period summaries (Step 8a) — rollups with prior-period delta
+expense --summary week     # last 7 days vs previous 7
+expense --summary month    # MTD vs same days of prior month
+expense --summary year     # YTD vs same calendar window prior year
+
 # Smalltalk is classified and politely acknowledged
 expense --chat "thanks!"
 
@@ -610,13 +617,14 @@ expense-tracker-bot/
 │       │   ├── factory.py         ← get_sheets_backend()
 │       │   ├── exceptions.py      ← SheetsError hierarchy
 │       │   └── data/sheet_format.yaml
-│       ├── pipeline/             # chat orchestration (Steps 5, 6, 7.1)
+│       ├── pipeline/             # chat orchestration (Steps 5, 6, 7.1, 8a)
 │       │   ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append + recompute nudge)
 │       │   ├── retrieval.py        ← RetrievalEngine + RetrievalAnswer (read ledger + filter + aggregate)
+│       │   ├── summary.py          ← SummaryEngine + Summary (week/month/year rollups w/ prior-period delta) — Step 8a
 │       │   ├── correction.py       ← CorrectionLogger / UndoResult / EditResult (Step 7.1)
 │       │   ├── reply.py            ← format_reply() — pure user-facing reply builder
 │       │   ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
-│       │   ├── factory.py          ← get_chat_pipeline() / get_correction_logger() / get_retrieval_engine()
+│       │   ├── factory.py          ← get_chat_pipeline() / get_correction_logger() / get_retrieval_engine() / get_summary_engine()
 │       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / RetrievalError / CorrectionError
 │       │   └── __init__.py         ← public API
 │       └── telegram_app/         # Telegram bot front-end (Step 7)
@@ -648,12 +656,14 @@ expense-tracker-bot/
     ├── test_sheets_factory.py          # config validation + fake/real selection
     ├── test_pipeline_logger.py         # ExpenseLogger: FX, auto-vivify, alias resolve, errors
     ├── test_pipeline_retrieval.py      # RetrievalEngine: parsing, filtering, aggregation, multi-currency
+    ├── test_pipeline_summary.py        # SummaryEngine + format_summary: window math + comparisons + reply shape
     ├── test_pipeline_correction.py     # CorrectionLogger: undo, edit-amount, edit-category, recompute resilience
     ├── test_pipeline_reply.py          # format_reply: every intent + log/retrieval/error branches
     ├── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend, log + retrieval)
     ├── test_telegram_auth.py           # allow-list parser + Authorizer
     ├── test_telegram_processor.py      # MessageProcessor (auth + pipeline orchestration)
     ├── test_telegram_correction.py     # CorrectionProcessor: /last, /undo, /edit + arg parser
+    ├── test_telegram_summary_processor.py  # SummaryProcessor: /summary auth + scope parsing + engine wiring
     └── test_telegram_handlers.py       # async PTB-handler glue + Application factory
 ```
 
@@ -669,7 +679,10 @@ expense-tracker-bot/
 6. **Sheets reader + retrieval queries** — `RetrievalEngine` reads the master `Transactions` ledger directly (no SUMIFS round-trip, no stale-formula cache), filters by date window + canonical category + vendor, aggregates everything in USD, and surfaces top categories, per-day breakdowns, and the largest matching row. Wired into the same `ChatPipeline` as logging — every `query_*` intent is now answered, in CLI and Telegram, with a typed `RetrievalAnswer`. Unparseable rows are skipped, never crash the turn. **(done — this commit)**
 7. **Telegram bot** — wraps the chat pipeline in a Telegram front-end. Long-polling (no public URL needed), explicit per-user-ID allow-list, `/start` / `/help` / `/whoami` commands, and `expense --telegram` CLI to run it. **(done)**
 7.1. **Self-healing + corrections** — every log "nudges" the affected monthly tab so the daily grid + summary stay in sync (works around a Google Sheets stale-cache quirk). New `/last`, `/undo`, `/edit amount X`, `/edit category Y` Telegram commands and matching CLI flags (`--undo`, `--edit-amount`, `--edit-category`) target the bottom-most Transactions row. Amount edits re-run FX so `Amount (USD)` stays consistent; category edits canonicalize through the registry. Refined `categories.yaml` to keep personal-care products in `Shopping` (vs salon services). **(done)**
-8. Polish — multi-turn clarification, weekly summaries, retrieval over multi-row /undo history.
+8a. **Period summaries** — new `SummaryEngine` composes two `RetrievalEngine` calls (focal + prior) into a typed `Summary` with apples-to-apples deltas across week / month / year scopes. Window arithmetic handles month-end and leap-year edge cases. Exposed as `expense --summary {week|month|year}` (verbose multi-line output for the CLI) and `/summary [week|month|year]` on Telegram (compact single-block format). Both reuse the existing Sheets client + parse semantics so retrieval and summaries can never disagree on the numbers. **(done — this commit)**
+8b. **Healthcheck** — `expense --healthcheck` will ping LLM, FX, Sheets, and Telegram in one shot.
+8c. **Log rotation** — built-in size-based rotation for `logs/llm_calls.jsonl` and `logs/conversations.jsonl`.
+8d. **Multi-turn clarification** — when intent classifier returns `unclear`, ask one targeted follow-up question instead of giving up.
 
 ## Running it
 

@@ -178,6 +178,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "reply along with a structured trace."
         ),
     )
+    g_chat.add_argument(
+        "--summary",
+        metavar="SCOPE",
+        choices=("week", "month", "year"),
+        help=(
+            "Print a focused period summary (week | month | year). Each "
+            "scope compares the current window against the equivalent "
+            "prior window — e.g. 'week' = rolling 7 days vs the 7 days "
+            "before that. Reads from the same Transactions ledger as "
+            "--chat."
+        ),
+    )
 
     # ─── Correction (undo / edit) ───────────────────────────────────────
     g_fix = p.add_argument_group(
@@ -662,6 +674,45 @@ def _cmd_chat(text: str, *, fake: bool) -> int:
     return 0 if turn.ok else 4
 
 
+def _cmd_summary(scope_arg: str, *, fake: bool) -> int:
+    """Build a period summary for *scope* and print the verbose form.
+
+    Reads the master ledger twice (focal + prior windows) so it
+    inherits all of :class:`RetrievalEngine`'s parsing semantics. The
+    Telegram bot uses the same engine but renders ``compact=True``.
+    """
+    from .pipeline import (
+        RetrievalError,
+        SummaryScope,
+        format_summary,
+        get_summary_engine,
+    )
+    from .sheets import SheetsError
+
+    cfg = get_settings()
+    scope = SummaryScope(scope_arg)
+    print(f"Provider : {cfg.LLM_PROVIDER}")
+    print(f"Timezone : {cfg.TIMEZONE}")
+    print(f"Currency : {cfg.DEFAULT_CURRENCY}")
+    print(f"Backend  : {'fake' if fake else 'gspread'}")
+    print(f"Scope    : {scope.value}\n")
+
+    try:
+        engine = get_summary_engine(cfg, fake=fake)
+    except (LLMError, SheetsError) as exc:
+        print(f"\n[config error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        summary = engine.summarize(scope)
+    except RetrievalError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(format_summary(summary))
+    return 0
+
+
 def _cmd_setup_year(
     value: str, *, fake: bool, overwrite: bool, hide_previous: bool,
 ) -> int:
@@ -900,6 +951,8 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     # Chat pipeline.
     if args.chat is not None:
         sys.exit(_cmd_chat(args.chat, fake=args.fake))
+    if args.summary is not None:
+        sys.exit(_cmd_summary(args.summary, fake=args.fake))
 
     # Correction (undo / edit).
     if args.undo:
@@ -922,7 +975,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     print("          --build-month YYYY-MM | --rebuild-month YYYY-MM")
     print("          --build-ytd YYYY      | --rebuild-ytd YYYY")
     print("          --setup-year YYYY [--overwrite] [--hide-previous]")
-    print("Chat    : --chat \"spent 40 on coffee yesterday\"")
+    print("Chat    : --chat \"spent 40 on coffee yesterday\" | --summary {week|month|year}")
     print("Fix     : --undo | --edit-amount 50 | --edit-category Groceries")
     print("Telegram: --telegram        (run the bot)")
     print("Add --fake to any Sheets / chat / telegram command to run offline.")

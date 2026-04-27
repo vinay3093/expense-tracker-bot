@@ -16,7 +16,9 @@ from .auth import AuthDecision, Authorizer, TelegramAuthError, parse_allowed_use
 from .bot import (
     MessageProcessor,
     ProcessedMessage,
+    SummaryProcessor,
     make_start_handler,
+    make_summary_handler,
     make_text_handler,
     make_whoami_handler,
 )
@@ -24,6 +26,7 @@ from .factory import (
     TelegramConfigError,
     build_application,
     build_processor,
+    build_summary_processor,
     run_polling,
 )
 
@@ -32,11 +35,14 @@ __all__ = [
     "Authorizer",
     "MessageProcessor",
     "ProcessedMessage",
+    "SummaryProcessor",
     "TelegramAuthError",
     "TelegramConfigError",
     "build_application",
     "build_processor",
+    "build_summary_processor",
     "make_start_handler",
+    "make_summary_handler",
     "make_text_handler",
     "make_whoami_handler",
     "parse_allowed_users",
