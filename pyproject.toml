@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "expense-tracker"
-version = "0.0.5"
+version = "0.0.6"
 description = "Chat-driven personal expense tracker that logs into Google Sheets."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,18 +34,26 @@ dependencies = [
     "google-auth>=2.30,<3.0",
 ]
 
-# Optional providers — install only when actually using them.
+# Optional providers + front-ends — install only when actually using them.
 #   pip install -e ".[openai]"      → enables ChatGPT
 #   pip install -e ".[anthropic]"   → enables Claude
-#   pip install -e ".[all]"         → all providers
+#   pip install -e ".[telegram]"    → enables the Telegram bot front-end
+#   pip install -e ".[all]"         → all providers + front-ends
 [project.optional-dependencies]
 openai = ["openai>=1.40,<2.0"]
 anthropic = ["anthropic>=0.40,<1.0"]
-all = ["openai>=1.40,<2.0", "anthropic>=0.40,<1.0"]
+telegram = ["python-telegram-bot>=21.6,<22.0"]
+all = [
+    "openai>=1.40,<2.0",
+    "anthropic>=0.40,<1.0",
+    "python-telegram-bot>=21.6,<22.0",
+]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23,<1.0",
     "pytest-cov>=5.0",
     "ruff>=0.5",
+    "python-telegram-bot>=21.6,<22.0",
 ]
 
 [project.scripts]
@@ -81,6 +89,7 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+asyncio_mode = "strict"
 filterwarnings = [
     "error",
     # pydantic-settings deprecation warnings from upstream — not our problem

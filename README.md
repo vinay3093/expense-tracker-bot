@@ -414,7 +414,7 @@ What happens under the hood:
    and appends it.
 3. **`format_reply`** (`pipeline/reply.py`) produces a short, friendly
    confirmation that the CLI prints back. The same string is what the
-   Telegram bot will send back in Step 7.
+   Telegram bot sends back (Step 7).
 4. **`Orchestrator.persist_turn`** writes one fully-resolved
    `ConversationTurn` to `logs/conversations.jsonl` — including the
    action outcome and the bot's reply, so every chat is auditable.
@@ -428,6 +428,74 @@ Failure isolation:
   follow-up.
 * LLM produces malformed JSON → graceful "couldn't parse" reply, no
   partial write.
+
+## Telegram bot (Step 7)
+
+Step 7 wraps the same `ChatPipeline` in a Telegram front-end so logging
+an expense is as effortless as DM'ing the bot from your phone. The
+SDK glue is intentionally thin (see `src/expense_tracker/telegram_app/`)
+— every text message is shipped through the existing pipeline and the
+bot replies with the same string the CLI prints.
+
+### Why long-polling, not webhooks
+
+Long-polling means the bot opens an outbound HTTPS connection to
+Telegram and waits for updates. It works from a laptop, a Pi, or a
+home server — no public URL, no TLS cert, no port forwarding. Plenty
+of throughput for a personal bot. Webhook deployment is reserved for
+later if there's a real need.
+
+### One-time bot setup
+
+```bash
+# 1. Install the optional Telegram extra:
+pip install -e ".[telegram]"
+
+# 2. Create a bot in Telegram:
+#    DM @BotFather → /newbot → choose a name + handle
+#    BotFather replies with a token like 123456789:ABCdef...
+#    Paste it into .env as TELEGRAM_BOT_TOKEN=...
+
+# 3. Discover your Telegram user ID without restarting twice:
+expense --telegram          # bot starts but refuses everyone
+# In Telegram, DM the bot:  /whoami
+# Bot replies with your numeric ID.
+# Add it to .env:           TELEGRAM_ALLOWED_USERS=123456789
+# Stop with Ctrl-C and restart `expense --telegram`.
+```
+
+### Daily use
+
+```bash
+expense --telegram
+# In Telegram → DM the bot:
+#   spent 40 on coffee today
+#   1500 INR groceries yesterday at Costco
+#   bought a tesla supercharge for $12.50
+# Bot replies inline; row lands in your Sheet within ~1s.
+```
+
+`/start` and `/help` show a short usage hint. `/whoami` always works
+(even for non-allowed users) so you can bootstrap the allow-list.
+
+### Auth model
+
+The allow-list is **explicit** — `TELEGRAM_ALLOWED_USERS` is a
+comma-separated list of integer Telegram user IDs and an empty value
+means *nobody* is allowed. Unauthorized DMs get a polite refusal that
+includes their user ID, never get routed to the LLM (zero cost), and
+never touch your Google Sheet. The bot is, by construction, a
+private tool.
+
+### Failure handling
+
+* LLM / Sheets exception during chat → user gets a generic "something
+  went wrong" reply; the full traceback lands in `logs/` so you can
+  debug after the fact.
+* Telegram network blips during reply → handled by python-telegram-bot's
+  built-in retry; we just log and move on.
+* `python-telegram-bot` not installed → `expense --telegram` exits with
+  a clear "install the [telegram] extra" message instead of crashing.
 
 ## Repository layout
 
@@ -478,13 +546,18 @@ expense-tracker-bot/
 │       │   ├── factory.py         ← get_sheets_backend()
 │       │   ├── exceptions.py      ← SheetsError hierarchy
 │       │   └── data/sheet_format.yaml
-│       └── pipeline/             # chat → row writer (Step 5)
-│           ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append)
-│           ├── reply.py            ← format_reply() — pure user-facing reply builder
-│           ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
-│           ├── factory.py          ← get_chat_pipeline()
-│           ├── exceptions.py       ← PipelineError / ExpenseLogError / InconsistentExtraction
-│           └── __init__.py         ← public API
+│       ├── pipeline/             # chat → row writer (Step 5)
+│       │   ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append)
+│       │   ├── reply.py            ← format_reply() — pure user-facing reply builder
+│       │   ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
+│       │   ├── factory.py          ← get_chat_pipeline()
+│       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / InconsistentExtraction
+│       │   └── __init__.py         ← public API
+│       └── telegram_app/         # Telegram bot front-end (Step 7)
+│           ├── auth.py             ← parse_allowed_users + Authorizer (no SDK)
+│           ├── bot.py              ← MessageProcessor + async handler factories
+│           ├── factory.py          ← build_application() / run_polling()
+│           └── __init__.py
 └── tests/
     ├── conftest.py              # isolated_env, fake_llm fixtures
     ├── test_config.py
@@ -509,7 +582,10 @@ expense-tracker-bot/
     ├── test_sheets_factory.py          # config validation + fake/real selection
     ├── test_pipeline_logger.py         # ExpenseLogger: FX, auto-vivify, alias resolve, errors
     ├── test_pipeline_reply.py          # format_reply: every intent + log/error branches
-    └── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend)
+    ├── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend)
+    ├── test_telegram_auth.py           # allow-list parser + Authorizer
+    ├── test_telegram_processor.py      # MessageProcessor (auth + pipeline orchestration)
+    └── test_telegram_handlers.py       # async PTB-handler glue + Application factory
 ```
 
 ## Roadmap (one commit per step)
@@ -520,9 +596,9 @@ expense-tracker-bot/
 3. **Extractor** — Intent classification + schema-specific extraction (`ExpenseEntry` / `RetrievalQuery`), category registry, conversation-turn logging. **(done)**
 4. **Sheets foundation** — service account auth, master `Transactions` ledger, formula-driven monthly + YTD tabs, multi-currency conversion, `--build-month / --setup-year` CLI. **(done)**
 5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done)**
-5.1. **Schema + visual polish** — Transactions reordered (Date | Day | Month | Year | Category | … | Timestamp). ``Month`` is now a human name ("April"), ``Year`` is a 4-digit int. ``Timestamp`` (bot-write time) moved to the far right so backdated entries read clearly. Daily grid + YTD grid now use a "quiet baseline / loud non-zero" emphasis. New ``expense --reinit-transactions`` for safe schema migrations. **(done — this commit)**
+5.1. **Schema + visual polish** — Transactions reordered (Date | Day | Month | Year | Category | … | Timestamp). ``Month`` is now a human name ("April"), ``Year`` is a 4-digit int. ``Timestamp`` (bot-write time) moved to the far right so backdated entries read clearly. Daily grid + YTD grid now use a "quiet baseline / loud non-zero" emphasis. New ``expense --reinit-transactions`` for safe schema migrations. **(done)**
 6. Sheets reader + aggregator — answer retrieval queries by SUMIFS-equivalent reads.
-7. Telegram bot — wraps the CLI in a chat front-end.
+7. **Telegram bot** — wraps the chat pipeline in a Telegram front-end. Long-polling (no public URL needed), explicit per-user-ID allow-list, `/start` / `/help` / `/whoami` commands, and `expense --telegram` CLI to run it. **(done — this commit)**
 8. Polish — `--undo`, multi-turn clarification, weekly summaries.
 
 ## Running it

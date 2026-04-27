@@ -169,6 +169,27 @@ class Settings(BaseSettings):
         description="Per-request timeout for Google Sheets API calls.",
     )
 
+    # ─── Telegram bot front-end (Step 7) ────────────────────────────────
+    TELEGRAM_BOT_TOKEN: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Token from @BotFather. Required only when running "
+            "`expense --telegram`. Keep it secret; treat it like a "
+            "password (anyone with it can pretend to be your bot)."
+        ),
+    )
+    TELEGRAM_ALLOWED_USERS: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated list of Telegram user IDs allowed to talk to "
+            "the bot — for a personal bot this is just your own ID. Anyone "
+            "not on the list gets a 'not authorized' reply that includes "
+            "their ID, so you can copy it into .env. Leave unset to refuse "
+            "every message (safe default — explicit allow-list, no implicit "
+            "open access)."
+        ),
+    )
+
 
 # Module-level singleton so we don't re-parse env on every call.
 _settings_cache: Settings | None = None

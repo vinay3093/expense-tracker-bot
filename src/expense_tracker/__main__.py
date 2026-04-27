@@ -1,6 +1,6 @@
 """CLI entry point — ``python -m expense_tracker`` / ``expense ...``.
 
-Three flavours of commands live here:
+Four flavours of commands live here:
 
 * **LLM diagnostics** (Steps 1-3): ``--ping-llm``, ``--extract``.
 * **Sheets tools** (Step 4): ``--whoami``, ``--list-sheets``,
@@ -9,6 +9,8 @@ Three flavours of commands live here:
 * **Chat pipeline** (Step 5): ``--chat`` — one full turn, end to end.
   Classifies intent, extracts the typed payload, writes the row to the
   spreadsheet (when intent=log_expense), and prints the bot's reply.
+* **Telegram bot** (Step 7): ``--telegram`` — long-poll Telegram and
+  route every text message through the same chat pipeline.
 
 All Sheets / chat commands honour ``--fake`` for offline experimentation
 — the layout runs end-to-end against an in-memory backend so you can
@@ -164,6 +166,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "Run TEXT through the full chat pipeline and print the bot's "
             "reply along with a structured trace."
         ),
+    )
+
+    # ─── Telegram front-end ────────────────────────────────────────────
+    g_tg = p.add_argument_group(
+        "Telegram",
+        description=(
+            "Run a Telegram bot that routes every incoming message "
+            "through the chat pipeline. Requires TELEGRAM_BOT_TOKEN + "
+            "TELEGRAM_ALLOWED_USERS in .env. Long-polls Telegram, so no "
+            "public URL or webhook is needed."
+        ),
+    )
+    g_tg.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Start the Telegram bot (Ctrl-C to stop).",
     )
 
     return p
@@ -582,6 +600,58 @@ def _cmd_setup_year(
     return 0
 
 
+# ─── Telegram bot ──────────────────────────────────────────────────────
+
+def _cmd_telegram(*, fake: bool) -> int:
+    """Start the long-polling Telegram bot.
+
+    Blocks until interrupted. Prints a startup banner so the operator
+    knows which spreadsheet, allow-list, and provider this run is using
+    — surprisingly easy to forget after a few terminals.
+    """
+    cfg = get_settings()
+    print(f"Provider       : {cfg.LLM_PROVIDER}")
+    print(f"Timezone       : {cfg.TIMEZONE}")
+    print(f"Currency       : {cfg.DEFAULT_CURRENCY}")
+    print(f"Backend        : {'fake' if fake else 'gspread'}")
+
+    try:
+        from .telegram_app import (
+            TelegramConfigError,
+            parse_allowed_users,
+            run_polling,
+        )
+    except ImportError as exc:
+        print(
+            f"\n[telegram error] python-telegram-bot is not installed: {exc}\n"
+            "Install with: pip install -e \".[telegram]\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        allowed = sorted(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
+    except ValueError as exc:
+        print(f"\n[telegram config error] {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Allowed users  : {allowed if allowed else '<none>'}")
+    if not allowed:
+        print(
+            "  note         : the bot will refuse every message until you "
+            "set TELEGRAM_ALLOWED_USERS in .env. DM the bot once and use "
+            "/whoami to see your ID.",
+        )
+
+    print("\nStarting long-polling. Press Ctrl-C to stop.\n")
+    try:
+        run_polling(cfg, fake=fake)
+    except TelegramConfigError as exc:
+        print(f"\n[telegram config error] {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 # ─── Dispatch ──────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
@@ -622,14 +692,19 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     if args.chat is not None:
         sys.exit(_cmd_chat(args.chat, fake=args.fake))
 
+    # Telegram bot.
+    if args.telegram:
+        sys.exit(_cmd_telegram(fake=args.fake))
+
     print(f"expense_tracker scaffold OK (v{__version__})")
-    print("LLM   : --ping-llm | --extract \"…\"")
-    print("Sheets: --whoami | --list-sheets | --init-transactions | --reinit-transactions")
-    print("        --build-month YYYY-MM | --rebuild-month YYYY-MM")
-    print("        --build-ytd YYYY      | --rebuild-ytd YYYY")
-    print("        --setup-year YYYY [--overwrite] [--hide-previous]")
-    print("Chat  : --chat \"spent 40 on coffee yesterday\"")
-    print("Add --fake to any Sheets / chat command to run offline.")
+    print("LLM     : --ping-llm | --extract \"…\"")
+    print("Sheets  : --whoami | --list-sheets | --init-transactions | --reinit-transactions")
+    print("          --build-month YYYY-MM | --rebuild-month YYYY-MM")
+    print("          --build-ytd YYYY      | --rebuild-ytd YYYY")
+    print("          --setup-year YYYY [--overwrite] [--hide-previous]")
+    print("Chat    : --chat \"spent 40 on coffee yesterday\"")
+    print("Telegram: --telegram        (run the bot)")
+    print("Add --fake to any Sheets / chat / telegram command to run offline.")
     sys.exit(0)
 
 
