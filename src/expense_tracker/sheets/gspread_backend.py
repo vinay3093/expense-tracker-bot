@@ -249,10 +249,11 @@ class GspreadWorksheet:
     def add_conditional_band(self, band: ConditionalBand) -> None:
         (r1, c1), (r2, c2) = parse_a1_range(band.range_a1)
         # Treat an open-ended range like "A2:Z" (no end row) as "to end
-        # of sheet". parse_a1_range returns -1 there because we'd parse
-        # "A2:Z" as missing — in practice we always provide an explicit
-        # end row, so this guard is defensive.
+        # of sheet". parse_a1_range returns -1 there.
         end_row = r2 + 1 if r2 >= 0 else self.row_count
+        gs_fmt = _cell_format_to_gspread(band.resolved_format)
+        if not gs_fmt:
+            return
         request = {
             "addConditionalFormatRule": {
                 "rule": {
@@ -268,9 +269,7 @@ class GspreadWorksheet:
                             "type": "CUSTOM_FORMULA",
                             "values": [{"userEnteredValue": band.predicate_formula}],
                         },
-                        "format": {
-                            "backgroundColor": _hex_to_rgb_dict(band.background_color),
-                        },
+                        "format": gs_fmt,
                     },
                 },
                 "index": 0,

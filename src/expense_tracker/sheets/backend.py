@@ -50,15 +50,40 @@ class CellFormat:
 
 @dataclass(frozen=True)
 class ConditionalBand:
-    """Conditional-format rule that paints rows matching a predicate.
+    """Conditional-format rule: apply ``cell_format`` to cells in
+    ``range_a1`` where ``predicate_formula`` evaluates to TRUE.
 
-    Used to give the Transactions tab alternating month bands without
-    inserting separator rows that would break SUMIFS formulas.
+    Originally just an alternating-band background helper for the
+    Transactions tab. Now carries a full :class:`CellFormat` so we can
+    also use it for "highlight non-zero values" emphasis on the monthly
+    + YTD grids (bigger font + bold + color when value > 0).
+
+    ``background_color`` is kept as an optional convenience field so
+    the very common "just paint the background" use case stays a
+    one-liner. When set without ``cell_format``, it's folded into a
+    background-only :class:`CellFormat` automatically.
     """
 
     range_a1: str
-    predicate_formula: str  # e.g. "=ISEVEN(MONTH($B2))"
-    background_color: str
+    predicate_formula: str  # e.g. "=ISEVEN(MONTH($B2))" or "=C5>0"
+    cell_format: CellFormat | None = None
+    background_color: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.cell_format is None and self.background_color is not None:
+            object.__setattr__(
+                self,
+                "cell_format",
+                CellFormat(background_color=self.background_color),
+            )
+        elif self.cell_format is None:
+            object.__setattr__(self, "cell_format", CellFormat())
+
+    @property
+    def resolved_format(self) -> CellFormat:
+        """Always-non-None :class:`CellFormat` for this rule."""
+        assert self.cell_format is not None
+        return self.cell_format
 
 
 # ─── Protocols ──────────────────────────────────────────────────────────

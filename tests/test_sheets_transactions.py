@@ -31,10 +31,10 @@ def test_columns_have_unique_keys_and_headers():
 
 
 def test_index_for_known_keys():
-    assert transactions_index_for("timestamp") == 0
+    # New schema: Date is the leftmost column, Timestamp is the rightmost.
+    assert transactions_index_for("date") == 0
     assert transactions_index_for("category") == 4
-    # ``trace_id`` is the last column; index = len - 1.
-    assert transactions_index_for("trace_id") == len(TRANSACTIONS_COLUMNS) - 1
+    assert transactions_index_for("timestamp") == len(TRANSACTIONS_COLUMNS) - 1
 
 
 def test_index_for_unknown_raises():
@@ -43,10 +43,15 @@ def test_index_for_unknown_raises():
 
 
 def test_col_for_returns_letters():
-    assert transactions_col_for("timestamp") == "A"
-    assert transactions_col_for("date") == "B"
+    assert transactions_col_for("date") == "A"
+    assert transactions_col_for("day") == "B"
+    assert transactions_col_for("month") == "C"
+    assert transactions_col_for("year") == "D"
+    assert transactions_col_for("category") == "E"
     # ``amount_usd`` is at index 9 → column J.
     assert transactions_col_for("amount_usd") == "J"
+    # ``timestamp`` lives at the very right (after Trace ID).
+    assert transactions_col_for("timestamp") == "N"
 
 
 def test_header_row_matches_columns():
@@ -58,16 +63,17 @@ def test_amount_columns_are_numeric():
     assert by_key["amount"].type is ColumnType.NUMBER
     assert by_key["amount_usd"].type is ColumnType.NUMBER
     assert by_key["fx_rate"].type is ColumnType.NUMBER
+    assert by_key["year"].type is ColumnType.NUMBER
 
 
 # ─── TransactionRow projection ─────────────────────────────────────────
 
 def test_transaction_row_as_row_order_matches_columns():
     row = TransactionRow(
-        timestamp=datetime(2026, 4, 24, 12, 0, 0),
         date=date(2026, 4, 24),
         day="Fri",
-        month="2026-04",
+        month="April",
+        year=2026,
         category="Food",
         note="coffee",
         vendor="Starbucks",
@@ -77,6 +83,7 @@ def test_transaction_row_as_row_order_matches_columns():
         fx_rate=1.0,
         source="chat",
         trace_id="req_abc",
+        timestamp=datetime(2026, 4, 24, 12, 0, 0),
     )
     cells = row.as_row()
     assert len(cells) == len(TRANSACTIONS_COLUMNS)
@@ -85,17 +92,19 @@ def test_transaction_row_as_row_order_matches_columns():
     assert cells[transactions_index_for("amount_usd")] == 4.50
     assert cells[transactions_index_for("fx_rate")] == 1.0
     assert cells[transactions_index_for("trace_id")] == "req_abc"
+    assert cells[transactions_index_for("month")] == "April"
+    assert cells[transactions_index_for("year")] == 2026
     # Date/timestamp serialised to ISO strings.
-    assert cells[transactions_index_for("timestamp")] == "2026-04-24T12:00:00"
     assert cells[transactions_index_for("date")] == "2026-04-24"
+    assert cells[transactions_index_for("timestamp")] == "2026-04-24T12:00:00"
 
 
 def test_transaction_row_handles_missing_optional_fields():
     row = TransactionRow(
-        timestamp=datetime(2026, 4, 24, 12, 0),
         date=date(2026, 4, 24),
         day="Fri",
-        month="2026-04",
+        month="April",
+        year=2026,
         category="Misc",
         note=None,
         vendor=None,
@@ -108,6 +117,8 @@ def test_transaction_row_handles_missing_optional_fields():
     assert cells[transactions_index_for("note")] == ""
     assert cells[transactions_index_for("vendor")] == ""
     assert cells[transactions_index_for("trace_id")] == ""
+    # Timestamp is optional (defaults to None) — serialised as "".
+    assert cells[transactions_index_for("timestamp")] == ""
     # Default ``source`` is "chat".
     assert cells[transactions_index_for("source")] == "chat"
 
@@ -130,10 +141,12 @@ def test_init_creates_tab_with_header_and_formatting():
     assert any(r.startswith("A1:") for r in formatted_ranges)
     # Freeze row 1.
     assert ws.freeze_state[0] == 1
-    # Conditional band should be installed for month banding.
+    # Conditional band should be installed for month banding. The band
+    # references ``$A`` (the Date column) under the new schema.
     assert len(ws.conditional_bands) == 1
     band = ws.conditional_bands[0]
     assert "MONTH" in band.predicate_formula
+    assert "$A" in band.predicate_formula
 
 
 def test_init_idempotent_when_header_matches():
@@ -168,10 +181,10 @@ def test_append_creates_tab_and_writes_row():
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
     row = TransactionRow(
-        timestamp=datetime(2026, 4, 24, 12, 0),
         date=date(2026, 4, 24),
         day="Fri",
-        month="2026-04",
+        month="April",
+        year=2026,
         category="Food",
         note="coffee",
         vendor="Starbucks",
@@ -179,13 +192,17 @@ def test_append_creates_tab_and_writes_row():
         currency="USD",
         amount_usd=4.5,
         fx_rate=1.0,
+        timestamp=datetime(2026, 4, 24, 12, 0),
     )
     append_transactions(b, fmt, [row])
     ws = b.get_worksheet("Transactions")
     assert isinstance(ws, _FakeWorksheet)
-    assert ws.cell("A1") == "Timestamp"  # header still in row 1
+    # Header still in row 1, Date column is leftmost.
+    assert ws.cell("A1") == "Date"
     assert ws.cell(f"{transactions_col_for('category')}2") == "Food"
     assert ws.cell(f"{transactions_col_for('amount_usd')}2") == 4.5
+    assert ws.cell(f"{transactions_col_for('month')}2") == "April"
+    assert ws.cell(f"{transactions_col_for('year')}2") == 2026
 
 
 def test_append_empty_list_just_ensures_tab_exists():
@@ -200,10 +217,10 @@ def test_append_multiple_rows_appended_in_order():
     fmt = SheetFormat.from_dict({})
     rows = [
         TransactionRow(
-            timestamp=datetime(2026, 4, d, 12, 0),
             date=date(2026, 4, d),
             day="Mon",
-            month="2026-04",
+            month="April",
+            year=2026,
             category="Food",
             note=None,
             vendor=None,
@@ -211,6 +228,7 @@ def test_append_multiple_rows_appended_in_order():
             currency="USD",
             amount_usd=10.0 * d,
             fx_rate=1.0,
+            timestamp=datetime(2026, 4, d, 12, 0),
         )
         for d in (1, 2, 3)
     ]
@@ -221,3 +239,51 @@ def test_append_multiple_rows_appended_in_order():
     assert ws.cell(f"{amount_col}2") == 10.0
     assert ws.cell(f"{amount_col}3") == 20.0
     assert ws.cell(f"{amount_col}4") == 30.0
+
+
+# ─── reinit_transactions_tab ───────────────────────────────────────────
+
+def test_reinit_creates_tab_when_missing():
+    from expense_tracker.sheets.transactions import reinit_transactions_tab
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    ws = reinit_transactions_tab(b, fmt)
+    assert b.has_worksheet("Transactions")
+    last_letter = transactions_col_for(TRANSACTIONS_COLUMNS[-1].key)
+    assert ws.get_values(f"A1:{last_letter}1")[0] == [
+        c.header for c in TRANSACTIONS_COLUMNS
+    ]
+
+
+def test_reinit_wipes_existing_rows():
+    """The whole point of reinit: throw away existing data."""
+    from expense_tracker.sheets.transactions import reinit_transactions_tab
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    init_transactions_tab(b, fmt)
+    row = TransactionRow(
+        date=date(2026, 4, 24),
+        day="Fri",
+        month="April",
+        year=2026,
+        category="Food",
+        note="coffee",
+        vendor=None,
+        amount=4.5,
+        currency="USD",
+        amount_usd=4.5,
+        fx_rate=1.0,
+    )
+    append_transactions(b, fmt, [row])
+    ws_before = b.get_worksheet("Transactions")
+    assert isinstance(ws_before, _FakeWorksheet)
+    cat_col = transactions_col_for("category")
+    assert ws_before.cell(f"{cat_col}2") == "Food"
+
+    reinit_transactions_tab(b, fmt)
+    ws_after = b.get_worksheet("Transactions")
+    assert isinstance(ws_after, _FakeWorksheet)
+    # Row 2 should now be empty (header still in row 1).
+    assert ws_after.cell(f"{cat_col}2") == ""

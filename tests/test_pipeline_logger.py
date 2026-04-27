@@ -131,23 +131,29 @@ def test_log_usd_entry_writes_one_row(
     assert result.row.fx_rate == 1.0
     assert result.row.currency == "USD"
     assert result.row.day == "Fri"
-    assert result.row.month == "2026-04"
+    assert result.row.month == "April"
+    assert result.row.year == 2026
     assert result.row.category == "Food"
     assert result.row.note == "latte"
     assert result.row.vendor == "Starbucks"
     assert result.row.source == "chat"
     assert result.row.trace_id == "tr_abc12345"
 
-    # Row landed in Transactions.
+    # Row landed in Transactions. Header A1 is now "Date" (date is the
+    # leftmost column in the new schema).
     txns = fake_backend.get_worksheet(sheet_format.transactions.sheet_name)
-    assert txns.cell("A1") == "Timestamp"
+    assert txns.cell("A1") == "Date"
     assert txns.cell(f"{txn_col_for('date')}2") == "2026-04-24"
+    assert txns.cell(f"{txn_col_for('month')}2") == "April"
+    assert txns.cell(f"{txn_col_for('year')}2") == 2026
     assert txns.cell(f"{txn_col_for('amount')}2") == 12.50
     assert txns.cell(f"{txn_col_for('amount_usd')}2") == 12.50
     assert txns.cell(f"{txn_col_for('trace_id')}2") == "tr_abc12345"
     assert txns.cell(f"{txn_col_for('source')}2") == "chat"
     assert txns.cell(f"{txn_col_for('vendor')}2") == "Starbucks"
     assert txns.cell(f"{txn_col_for('note')}2") == "latte"
+    # Timestamp lives at the rightmost column.
+    assert txns.cell(f"{txn_col_for('timestamp')}2").startswith("2026-04-24T14:30")
 
     # Monthly tab was auto-vivified.
     assert result.monthly_tab_created is True

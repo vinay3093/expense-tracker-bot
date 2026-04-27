@@ -28,12 +28,13 @@ from dataclasses import dataclass
 
 from .backend import (
     CellFormat,
+    ConditionalBand,
     SheetsBackend,
     WorksheetHandle,
     col_index_to_letter,
 )
 from .exceptions import SheetFormatError, SheetsAlreadyExistsError
-from .format import SheetFormat
+from .format import CellStyle, SheetFormat
 from .transactions import (
     TRANSACTIONS_COLUMNS,
 )
@@ -336,13 +337,49 @@ def _format_ytd_tab(
         ),
     )
 
-    # Numeric region (categories + total) over the grid body.
+    emphasis = sheet_format.emphasis
+
+    # ─── Grid baselines + conditional emphasis ──────────────────────────
+    # Quiet baseline for category cells and TOTAL column data cells; loud
+    # emphasis applied via conditional bands when value > 0. See
+    # month_builder._format_month_tab for the rationale.
+    cat_data_range = (
+        f"{layout.first_cat_col_letter}{ROW_GRID_FIRST}:"
+        f"{layout.last_cat_col_letter}{ROW_GRID_LAST}"
+    )
     ws.format_range(
-        f"{layout.first_cat_col_letter}{ROW_GRID_FIRST}:{last_col}{ROW_GRID_LAST}",
-        CellFormat(number_format=fmt.number_format),
+        cat_data_range,
+        _style_to_format(emphasis.data_cell_base, number_format=fmt.number_format),
     )
 
-    # Total row.
+    total_data_range = f"{total_col}{ROW_GRID_FIRST}:{total_col}{ROW_GRID_LAST}"
+    ws.format_range(
+        total_data_range,
+        _style_to_format(
+            emphasis.total_cell_base,
+            number_format=fmt.number_format,
+            background_override=fmt.grid_total_column_background,
+        ),
+    )
+
+    ws.add_conditional_band(
+        ConditionalBand(
+            range_a1=cat_data_range,
+            predicate_formula=(
+                f"={layout.first_cat_col_letter}{ROW_GRID_FIRST}>0"
+            ),
+            cell_format=_style_to_band_format(emphasis.data_cell_emphasis),
+        )
+    )
+    ws.add_conditional_band(
+        ConditionalBand(
+            range_a1=total_data_range,
+            predicate_formula=f"={total_col}{ROW_GRID_FIRST}>0",
+            cell_format=_style_to_band_format(emphasis.total_cell_emphasis),
+        )
+    )
+
+    # ─── Total row (always-on emphasis) ─────────────────────────────────
     ws.format_range(
         f"A{ROW_GRID_TOTAL}:{last_col}{ROW_GRID_TOTAL}",
         CellFormat(
@@ -351,15 +388,14 @@ def _format_ytd_tab(
             number_format=fmt.number_format,
         ),
     )
-
-    # TOTAL column band.
     ws.format_range(
-        f"{total_col}{ROW_GRID_FIRST}:{total_col}{ROW_GRID_LAST}",
-        CellFormat(
-            background_color=fmt.grid_total_column_background,
-            bold=True,
-            number_format=fmt.number_format,
-        ),
+        f"{layout.first_cat_col_letter}{ROW_GRID_TOTAL}:"
+        f"{layout.last_cat_col_letter}{ROW_GRID_TOTAL}",
+        _style_to_format(emphasis.category_total, number_format=fmt.number_format),
+    )
+    ws.format_range(
+        f"{total_col}{ROW_GRID_TOTAL}",
+        _style_to_format(emphasis.grand_total, number_format=fmt.number_format),
     )
 
     # Vendor section title.
@@ -379,3 +415,32 @@ def _format_ytd_tab(
         fmt.total_column_width,
     ]
     ws.set_column_widths_px(start_col="A", widths=widths)
+
+
+def _style_to_format(
+    style: CellStyle,
+    *,
+    number_format: str | None = None,
+    background_override: str | None = None,
+) -> CellFormat:
+    """Translate a YAML-defined :class:`CellStyle` to a backend
+    :class:`CellFormat`. See :func:`month_builder._style_to_format`."""
+    bg = style.background or background_override
+    return CellFormat(
+        bold=style.bold,
+        font_size=style.font_size,
+        foreground_color=style.foreground,
+        background_color=bg,
+        number_format=number_format,
+    )
+
+
+def _style_to_band_format(style: CellStyle) -> CellFormat:
+    """Conditional-format-safe :class:`CellFormat`. Strips font_size and
+    number_format because Google Sheets doesn't accept them in
+    conditional rules — see :func:`month_builder._style_to_band_format`."""
+    return CellFormat(
+        bold=style.bold,
+        foreground_color=style.foreground,
+        background_color=style.background,
+    )

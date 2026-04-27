@@ -103,6 +103,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create the Transactions master ledger tab if missing.",
     )
     g_sheets.add_argument(
+        "--reinit-transactions",
+        action="store_true",
+        help=(
+            "Wipe the existing Transactions tab (if any) and recreate it "
+            "with the current schema. Destructive: every row is lost. Use "
+            "after a column-layout change."
+        ),
+    )
+    g_sheets.add_argument(
         "--build-month",
         metavar="YYYY-MM",
         help="Build one monthly tab (e.g. 2026-04). Refuses if it exists.",
@@ -381,6 +390,32 @@ def _cmd_init_transactions(*, fake: bool) -> int:
     return 0
 
 
+def _cmd_reinit_transactions(*, fake: bool) -> int:
+    """Wipe and recreate the Transactions tab. Destructive."""
+    from .sheets import SheetsError, get_sheet_format
+    from .sheets.transactions import reinit_transactions_tab
+
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    fmt = get_sheet_format()
+    name = fmt.transactions.sheet_name
+    existed = backend.has_worksheet(name)
+
+    print(f"Reinit Transactions tab: {name!r} in {backend.title!r}")
+    print(f"  existed before : {existed}")
+    if existed and not fake:
+        print("  warning        : this wipes every row in the tab.")
+
+    try:
+        ws = reinit_transactions_tab(backend, fmt)
+    except SheetsError as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"  rebuilt        : rows={ws.row_count}, cols={ws.col_count}")
+    return 0
+
+
 def _cmd_build_month(value: str, *, fake: bool, overwrite: bool) -> int:
     from .sheets import SheetsError, build_month_tab, get_sheet_format
 
@@ -565,6 +600,8 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
         sys.exit(_cmd_list_sheets(fake=args.fake))
     if args.init_transactions:
         sys.exit(_cmd_init_transactions(fake=args.fake))
+    if args.reinit_transactions:
+        sys.exit(_cmd_reinit_transactions(fake=args.fake))
     if args.build_month is not None:
         sys.exit(_cmd_build_month(args.build_month, fake=args.fake, overwrite=False))
     if args.rebuild_month is not None:
@@ -587,7 +624,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
 
     print(f"expense_tracker scaffold OK (v{__version__})")
     print("LLM   : --ping-llm | --extract \"…\"")
-    print("Sheets: --whoami | --list-sheets | --init-transactions")
+    print("Sheets: --whoami | --list-sheets | --init-transactions | --reinit-transactions")
     print("        --build-month YYYY-MM | --rebuild-month YYYY-MM")
     print("        --build-ytd YYYY      | --rebuild-ytd YYYY")
     print("        --setup-year YYYY [--overwrite] [--hide-previous]")

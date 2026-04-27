@@ -33,12 +33,13 @@ from datetime import date
 
 from .backend import (
     CellFormat,
+    ConditionalBand,
     SheetsBackend,
     WorksheetHandle,
     col_index_to_letter,
 )
 from .exceptions import SheetFormatError
-from .format import SheetFormat
+from .format import CellStyle, SheetFormat
 from .transactions import (
     TRANSACTIONS_COLUMNS,
 )
@@ -454,10 +455,25 @@ def _format_month_tab(
     layout: MonthLayout,
     categories: list[str],
 ) -> None:
-    """Apply colors, bold, freeze, widths."""
+    """Apply colors, bold, freeze, widths.
+
+    Visual emphasis model (configurable via ``sheet_format.yaml > emphasis``):
+
+    * Daily grid (categories + TOTAL): start with a *quiet* baseline so a
+      cell with 0.00 nearly disappears. Then add conditional bands that
+      bold + enlarge + recolor cells whose value is > 0. Result: a normal
+      day quietly fades into the background; a real spend visually pops.
+    * Per-category totals (bottom row): always-on bold + colored — they
+      summarize the whole month, so they should be loud regardless of
+      whether any one cell is zero.
+    * Grand total (corner cell): always-on, the loudest style of all —
+      bigger font + tint background. The eye-magnet of the tab.
+    """
     fmt = sheet_format.monthly.formatting
+    emphasis = sheet_format.emphasis
     n_cats = len(categories)
     first_cat_col = col_index_to_letter(CATEGORY_FIRST_INDEX)
+    last_cat_col = col_index_to_letter(CATEGORY_FIRST_INDEX + n_cats - 1)
     total_col = col_index_to_letter(CATEGORY_FIRST_INDEX + n_cats)
     last_col = total_col
 
@@ -502,13 +518,60 @@ def _format_month_tab(
         ),
     )
 
-    # Numeric region (categories + total) for the daily grid.
+    # ─── Daily grid baselines + conditional emphasis ────────────────────
+    # 1) Category cells: quiet baseline.
+    cat_data_range = (
+        f"{first_cat_col}{layout.daily_first_row}:"
+        f"{last_cat_col}{layout.daily_last_row}"
+    )
     ws.format_range(
-        f"{first_cat_col}{layout.daily_first_row}:{last_col}{layout.daily_last_row}",
-        CellFormat(number_format=fmt.number_format),
+        cat_data_range,
+        _style_to_format(emphasis.data_cell_base, number_format=fmt.number_format),
     )
 
-    # Total row.
+    # 2) TOTAL column data cells: quiet baseline (light tint background
+    # kept from the old design so the column still reads as a "totals
+    # band" even when every value happens to be zero).
+    total_data_range = (
+        f"{total_col}{layout.daily_first_row}:"
+        f"{total_col}{layout.daily_last_row}"
+    )
+    ws.format_range(
+        total_data_range,
+        _style_to_format(
+            emphasis.total_cell_base,
+            number_format=fmt.number_format,
+            background_override=fmt.grid_total_column_background,
+        ),
+    )
+
+    # 3) Conditional band — categories with value > 0 get loud.
+    # The custom-formula references the top-left of the range; Sheets
+    # adjusts for each cell. So "=C11>0" applied to "C11:N41" tests
+    # each cell against itself.
+    ws.add_conditional_band(
+        ConditionalBand(
+            range_a1=cat_data_range,
+            predicate_formula=(
+                f"={first_cat_col}{layout.daily_first_row}>0"
+            ),
+            cell_format=_style_to_band_format(emphasis.data_cell_emphasis),
+        )
+    )
+
+    # 4) Conditional band — TOTAL column with value > 0 gets even louder.
+    ws.add_conditional_band(
+        ConditionalBand(
+            range_a1=total_data_range,
+            predicate_formula=(
+                f"={total_col}{layout.daily_first_row}>0"
+            ),
+            cell_format=_style_to_band_format(emphasis.total_cell_emphasis),
+        )
+    )
+
+    # ─── Total row (always-on emphasis) ─────────────────────────────────
+    # Plain row tint first, so the labels in cols A/B inherit it...
     ws.format_range(
         f"A{layout.total_row}:{last_col}{layout.total_row}",
         CellFormat(
@@ -517,15 +580,16 @@ def _format_month_tab(
             number_format=fmt.number_format,
         ),
     )
-
-    # TOTAL column band (highlight the right-most column).
+    # ...then overlay category totals with the louder "category_total"
+    # style — bold, deep blue.
     ws.format_range(
-        f"{total_col}{layout.daily_first_row}:{total_col}{layout.daily_last_row}",
-        CellFormat(
-            background_color=fmt.grid_total_column_background,
-            bold=True,
-            number_format=fmt.number_format,
-        ),
+        f"{first_cat_col}{layout.total_row}:{last_cat_col}{layout.total_row}",
+        _style_to_format(emphasis.category_total, number_format=fmt.number_format),
+    )
+    # Grand total (corner cell): the loudest style on the tab.
+    ws.format_range(
+        f"{total_col}{layout.total_row}",
+        _style_to_format(emphasis.grand_total, number_format=fmt.number_format),
     )
 
     # Breakdown title.
@@ -555,3 +619,48 @@ def _format_month_tab(
         fmt.total_column_width,
     ]
     ws.set_column_widths_px(start_col="A", widths=widths)
+
+
+def _style_to_format(
+    style: CellStyle,
+    *,
+    number_format: str | None = None,
+    background_override: str | None = None,
+) -> CellFormat:
+    """Translate a YAML-defined :class:`CellStyle` to a backend
+    :class:`CellFormat`.
+
+    ``background_override`` lets callers preserve a tint set elsewhere
+    (e.g. the TOTAL column's existing band color) when the emphasis
+    style itself doesn't specify a background.
+    """
+    bg = style.background or background_override
+    return CellFormat(
+        bold=style.bold,
+        font_size=style.font_size,
+        foreground_color=style.foreground,
+        background_color=bg,
+        number_format=number_format,
+    )
+
+
+def _style_to_band_format(style: CellStyle) -> CellFormat:
+    """Same as :func:`_style_to_format`, but for **conditional** rules.
+
+    Google Sheets' conditional-format API only supports bold / italic /
+    strikethrough / foreground / background. ``fontSize`` and
+    ``numberFormat`` are silently rejected (or, more accurately, return
+    a 400). We strip them here so callers can keep one shared
+    :class:`CellStyle` model in YAML without worrying about which
+    fields the underlying API accepts where.
+
+    The size-emphasis the user originally wanted ("non-zero cells
+    bigger") is therefore unachievable as a conditional rule — we
+    settle for bold + a high-contrast foreground color, which gives
+    plenty of visual weight against the quiet light-gray baseline.
+    """
+    return CellFormat(
+        bold=style.bold,
+        foreground_color=style.foreground,
+        background_color=style.background,
+    )

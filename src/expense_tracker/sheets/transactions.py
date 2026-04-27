@@ -53,14 +53,15 @@ class TransactionColumn:
 # ─── The canonical Transactions schema ──────────────────────────────────
 # Order here = order in the spreadsheet. Adding new columns appends to
 # the right; never insert in the middle without a migration plan.
+#
+# Layout intent: the leftmost columns are the user's quick-scan info
+# (when, what, how much). Audit metadata (Source, Trace ID, Timestamp)
+# is pushed to the right. ``Timestamp`` is the *write* time — distinct
+# from ``Date``, which is the *expense* time. Keeping it on the right
+# means a row backdated by a week visibly shows "I logged this late"
+# without dominating the user's view.
 
 TRANSACTIONS_COLUMNS: tuple[TransactionColumn, ...] = (
-    TransactionColumn(
-        key="timestamp",
-        header="Timestamp",
-        type=ColumnType.DATETIME,
-        description="When the bot wrote the row (ISO 8601, in user TZ).",
-    ),
     TransactionColumn(
         key="date",
         header="Date",
@@ -77,7 +78,13 @@ TRANSACTIONS_COLUMNS: tuple[TransactionColumn, ...] = (
         key="month",
         header="Month",
         type=ColumnType.TEXT,
-        description='"YYYY-MM" — easy filter / pivot key.',
+        description='Full month name like "April" — easy filter / pivot key.',
+    ),
+    TransactionColumn(
+        key="year",
+        header="Year",
+        type=ColumnType.NUMBER,
+        description="4-digit year, e.g. 2026.",
     ),
     TransactionColumn(
         key="category",
@@ -133,6 +140,16 @@ TRANSACTIONS_COLUMNS: tuple[TransactionColumn, ...] = (
         type=ColumnType.TEXT,
         description="LLM call ID that produced this row (for audit / debugging).",
     ),
+    TransactionColumn(
+        key="timestamp",
+        header="Timestamp",
+        type=ColumnType.DATETIME,
+        description=(
+            "When the bot wrote the row (ISO 8601, user TZ). Distinct "
+            "from Date — the gap between them shows how late an expense "
+            "was logged."
+        ),
+    ),
 )
 
 
@@ -164,15 +181,20 @@ def header_row() -> list[str]:
 class TransactionRow:
     """One row about to be appended to the Transactions tab.
 
-    Fields map 1-to-1 to :data:`TRANSACTIONS_COLUMNS`. ``amount_usd``
-    and ``fx_rate`` are computed by the currency module before this
-    object is built — see :mod:`expense_tracker.sheets.currency`.
+    Fields map 1-to-1 to :data:`TRANSACTIONS_COLUMNS` in order.
+    ``amount_usd`` and ``fx_rate`` are computed by the currency module
+    before this object is built — see
+    :mod:`expense_tracker.sheets.currency`.
+
+    ``month`` is the human month name (``"April"``), ``year`` is the
+    4-digit year. ``timestamp`` is the bot's *write* time, distinct
+    from ``date`` (the expense time).
     """
 
-    timestamp: datetime
     date: date
     day: str
     month: str
+    year: int
     category: str
     note: str | None
     vendor: str | None
@@ -182,14 +204,16 @@ class TransactionRow:
     fx_rate: float
     source: str = "chat"
     trace_id: str | None = None
+    timestamp: datetime | None = None
 
     def as_row(self) -> list[Any]:
         """Project to the cell-list order used by the backend."""
+        ts = self.timestamp.isoformat(timespec="seconds") if self.timestamp else ""
         return [
-            self.timestamp.isoformat(timespec="seconds"),
             self.date.isoformat(),
             self.day,
             self.month,
+            self.year,
             self.category,
             self.note or "",
             self.vendor or "",
@@ -199,6 +223,7 @@ class TransactionRow:
             self.fx_rate,
             self.source,
             self.trace_id or "",
+            ts,
         ]
 
 
@@ -243,6 +268,22 @@ def init_transactions_tab(
     return ws
 
 
+def reinit_transactions_tab(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+) -> WorksheetHandle:
+    """Wipe the existing Transactions tab (if any) and create it fresh.
+
+    Destructive: every row is lost. Used after a schema change so the
+    bot can rebuild the master ledger with the new column layout
+    instead of refusing to write into a tab whose header doesn't match.
+    """
+    name = sheet_format.transactions.sheet_name
+    if backend.has_worksheet(name):
+        backend.delete_worksheet(name)
+    return init_transactions_tab(backend, sheet_format)
+
+
 def append_transactions(
     backend: SheetsBackend,
     sheet_format: SheetFormat,
@@ -284,13 +325,16 @@ def _apply_transactions_formatting(ws: WorksheetHandle, sheet_format: SheetForma
 
     # Numeric columns get a number format applied to the whole column
     # (rows 2 onwards) so freshly-appended rows render correctly.
+    # ``year`` is special-cased: a plain integer renders cleaner as
+    # "2026" than as "2,026.00".
     for c in TRANSACTIONS_COLUMNS:
         if c.type is not ColumnType.NUMBER:
             continue
         letter = col_for(c.key)
+        col_number_format = "0" if c.key == "year" else fmt.number_format
         ws.format_range(
             f"{letter}2:{letter}",
-            CellFormat(number_format=fmt.number_format),
+            CellFormat(number_format=col_number_format),
         )
 
     # Column widths.

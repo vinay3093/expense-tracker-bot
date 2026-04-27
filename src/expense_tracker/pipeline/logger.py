@@ -261,14 +261,17 @@ class ExpenseLogger:
 
         # ``day`` is the short weekday name in en-US — small, stable,
         # and unambiguous for both humans and SUMIFS predicates.
+        # ``month`` is the human month name ("April"); ``year`` is the
+        # 4-digit year. Together they give the user a friendlier view
+        # than the old "2026-04" key while still being fully filterable.
         day_name = entry.date.strftime("%a")
-        month_key = f"{entry.date.year:04d}-{entry.date.month:02d}"
+        month_name = calendar.month_name[entry.date.month]
 
         return TransactionRow(
-            timestamp=ts,
             date=entry.date,
             day=day_name,
-            month=month_key,
+            month=month_name,
+            year=entry.date.year,
             category=canonical_category,
             note=entry.note,
             vendor=entry.vendor,
@@ -278,6 +281,7 @@ class ExpenseLogger:
             fx_rate=float(conv.rate),
             source=self._source,
             trace_id=trace_id,
+            timestamp=ts,
         )
 
 

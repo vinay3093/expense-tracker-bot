@@ -48,11 +48,12 @@ def _row(
     fx_rate=1.0,
     trace_id="tr_test",
 ) -> TransactionRow:
+    import calendar as _cal
     return TransactionRow(
-        timestamp=datetime(2026, 4, 24, 14, 30),
         date=date_,
         day=date_.strftime("%a"),
-        month=f"{date_.year:04d}-{date_.month:02d}",
+        month=_cal.month_name[date_.month],
+        year=date_.year,
         category=category,
         note=note,
         vendor=vendor,
@@ -62,6 +63,7 @@ def _row(
         fx_rate=fx_rate,
         source="chat",
         trace_id=trace_id,
+        timestamp=datetime(2026, 4, 24, 14, 30),
     )
 
 

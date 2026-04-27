@@ -229,3 +229,71 @@ def test_build_month_works_for_every_month_of_2026():
         assert isinstance(ws, _FakeWorksheet)
         last_day_iso = f"2026-{m:02d}-{days:02d}"
         assert ws.cell(f"A{10 + days}") == last_day_iso
+
+
+def test_build_month_installs_emphasis_conditional_bands():
+    """Daily grid should get two ``>0``-predicated conditional bands:
+    one for the category region, one for the TOTAL column.
+
+    Note: Google Sheets' conditional-format API doesn't support font
+    size or number format, so emphasis is achieved via bold + dark
+    foreground only. Size is uniform across the grid (set by the base
+    style at the cell level, not the conditional rule).
+    """
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    build_month_tab(b, fmt, year=2026, month=4, categories=SIMPLE_CATEGORIES)
+    ws = b.get_worksheet("April 2026")
+    assert isinstance(ws, _FakeWorksheet)
+
+    bands = ws.conditional_bands
+    # Predicates of the form "=C11>0", "=F11>0" etc.
+    gt_predicates = [b for b in bands if b.predicate_formula.endswith(">0")]
+    assert len(gt_predicates) == 2, (
+        f"expected 2 emphasis bands, got {len(gt_predicates)}: "
+        f"{[b.predicate_formula for b in gt_predicates]}"
+    )
+
+    # Category-cell emphasis band: bold + a near-black foreground.
+    cat_band = next(b for b in gt_predicates if "C11>0" in b.predicate_formula)
+    assert cat_band.resolved_format.bold is True
+    assert cat_band.resolved_format.foreground_color is not None
+    # Conditional rules can't carry font_size — must be stripped.
+    assert cat_band.resolved_format.font_size is None
+
+    # TOTAL-column emphasis band: bold + a deep-blue foreground (the
+    # loudest body-text rule).
+    total_letter = chr(ord("A") + 2 + len(SIMPLE_CATEGORIES))
+    total_band = next(
+        b for b in gt_predicates if f"{total_letter}11>0" in b.predicate_formula
+    )
+    assert total_band.resolved_format.bold is True
+    assert total_band.resolved_format.foreground_color is not None
+    assert total_band.resolved_format.font_size is None
+    # Different (typically bluer) color than the category emphasis.
+    assert (
+        total_band.resolved_format.foreground_color
+        != cat_band.resolved_format.foreground_color
+    )
+
+
+def test_build_month_grand_total_cell_has_loudest_style():
+    """Grand-total corner cell should always carry the loudest style —
+    largest font of the tab and a tinted background."""
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    build_month_tab(b, fmt, year=2026, month=4, categories=SIMPLE_CATEGORIES)
+    ws = b.get_worksheet("April 2026")
+    assert isinstance(ws, _FakeWorksheet)
+
+    # Grand-total corner: TOTAL column @ row layout.total_row (= 41 for April).
+    grand_total_letter = chr(ord("A") + 2 + len(SIMPLE_CATEGORIES))
+    target = f"{grand_total_letter}41"
+    matching = [
+        f for (rng, f) in ws.format_calls() if rng == target
+    ]
+    assert matching, f"no format calls targeted grand-total cell {target}"
+    last_fmt = matching[-1]
+    assert last_fmt.bold is True
+    assert (last_fmt.font_size or 0) >= 13
+    assert last_fmt.background_color is not None

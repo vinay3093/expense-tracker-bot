@@ -35,10 +35,10 @@ transactions:
     month_band_color: "#F2F2F2"
     number_format: "#,##0.00"
     column_widths:
-      timestamp: 145
       date: 95
       day: 70
       month: 80
+      year: 70
       category: 130
       note: 200
       vendor: 140
@@ -48,6 +48,7 @@ transactions:
       fx_rate: 75
       source: 75
       trace_id: 100
+      timestamp: 145
 
 # ─── Monthly tabs (e.g. "April 2026") ───────────────────────────────────
 monthly:
@@ -97,3 +98,45 @@ ytd:
 
   # Top N vendors shown in the YTD vendor breakdown.
   top_vendors_count: 10
+
+# ─── Emphasis (bolder visual styling for non-zero cells) ────────────────
+#
+# Both monthly and YTD daily grids start as a sea of zero-valued SUMIFS
+# cells. These rules give the grid a "quiet baseline + loud emphasis"
+# so genuine spending is what your eye lands on.
+#
+# Important constraint: Google Sheets' conditional-format API only
+# accepts bold / italic / strikethrough / foreground / background.
+# ``font_size`` on the ``*_emphasis`` rules is therefore IGNORED for
+# conditional rules — the visual size of a cell is set by its base
+# style only. We bake the size up in the *_base styles so every cell
+# in the grid is a touch larger than the legacy 10pt layout, then use
+# bold + dark foreground for the "this cell has a value" emphasis.
+#
+# ``font_size`` IS honoured on category_total + grand_total, which
+# apply unconditionally (not as conditional rules).
+emphasis:
+  data_cell_base:
+    bold: false
+    font_size: 11
+    foreground: "#9AA0A6"
+  data_cell_emphasis:
+    bold: true
+    foreground: "#1F1F1F"
+  total_cell_base:
+    bold: false
+    font_size: 11
+    foreground: "#9AA0A6"
+  total_cell_emphasis:
+    bold: true
+    foreground: "#0B5394"
+  category_total:
+    bold: true
+    font_size: 11
+    foreground: "#0B5394"
+    background: "#F0F0F0"
+  grand_total:
+    bold: true
+    font_size: 13
+    foreground: "#073763"
+    background: "#E8F0FE"

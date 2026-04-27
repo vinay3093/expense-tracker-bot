@@ -21,6 +21,79 @@ from .exceptions import SheetFormatError
 _DEFAULT_FORMAT_FILE = Path(__file__).parent / "data" / "sheet_format.yaml"
 
 
+# ─── Emphasis (visual "loud the >0 cells" rules) ───────────────────────
+#
+# Both monthly and YTD grids share a single emphasis vocabulary:
+#
+#   * data_cell_base       - quiet style for daily-grid category cells
+#                            (mostly zeros; we want them to vanish into
+#                            the background).
+#   * data_cell_emphasis   - applied via conditional band when the cell
+#                            value > 0. Bigger + bolder + darker so real
+#                            spending visually pops.
+#   * total_cell_base      - same idea, but for the per-day TOTAL column.
+#   * total_cell_emphasis  - "real day" emphasis: the day's spend stands
+#                            out even more than category cells.
+#   * category_total       - always-on style for the per-column totals
+#                            (bottom row of the grid).
+#   * grand_total          - always-on style for the corner cell — the
+#                            month's grand total. The eye-magnet.
+
+class CellStyle(BaseModel):
+    """Lightweight, YAML-friendly description of a cell's text styling.
+
+    Maps cleanly onto :class:`~expense_tracker.sheets.backend.CellFormat`
+    while staying small enough to be readable in YAML. Used for the
+    emphasis rules that make non-zero cells visually pop.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    bold: bool = False
+    font_size: int = Field(default=10, ge=6, le=36)
+    foreground: str = "#000000"
+    background: str | None = None
+
+
+class EmphasisFormatting(BaseModel):
+    """Visual emphasis rules shared by monthly + YTD tabs.
+
+    Every cell in a monthly daily-grid is a SUMIFS that defaults to 0.
+    Without emphasis the grid is a sea of "0.00" — readable but flat.
+    These rules set a quiet baseline + a louder conditional emphasis so
+    actual spending reads at a glance.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    data_cell_base: CellStyle = Field(
+        default_factory=lambda: CellStyle(font_size=10, foreground="#9AA0A6"),
+    )
+    data_cell_emphasis: CellStyle = Field(
+        default_factory=lambda: CellStyle(
+            font_size=11, foreground="#1F1F1F", bold=True
+        ),
+    )
+    total_cell_base: CellStyle = Field(
+        default_factory=lambda: CellStyle(font_size=10, foreground="#9AA0A6"),
+    )
+    total_cell_emphasis: CellStyle = Field(
+        default_factory=lambda: CellStyle(
+            font_size=12, foreground="#0B5394", bold=True
+        ),
+    )
+    category_total: CellStyle = Field(
+        default_factory=lambda: CellStyle(
+            font_size=11, foreground="#0B5394", bold=True, background="#F0F0F0",
+        ),
+    )
+    grand_total: CellStyle = Field(
+        default_factory=lambda: CellStyle(
+            font_size=13, foreground="#073763", bold=True, background="#E8F0FE",
+        ),
+    )
+
+
 # ─── Reusable formatting blocks ─────────────────────────────────────────
 
 class TransactionsFormatting(BaseModel):
@@ -141,6 +214,7 @@ class SheetFormat(BaseModel):
     transactions: TransactionsFormat = Field(default_factory=TransactionsFormat)
     monthly: MonthlyFormat = Field(default_factory=MonthlyFormat)
     ytd: YTDFormat = Field(default_factory=YTDFormat)
+    emphasis: EmphasisFormatting = Field(default_factory=EmphasisFormatting)
 
     @field_validator("primary_currency")
     @classmethod

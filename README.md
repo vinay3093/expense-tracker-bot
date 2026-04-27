@@ -248,13 +248,19 @@ builders, and a thin gspread adapter. Three tabs make up the picture:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Transactions   master ledger — every expense is one row    │
-│                 fixed schema (Timestamp / Date / Day /      │
-│                 Month / Category / Note / Vendor / Amount / │
+│                 fixed schema (Date / Day / Month / Year /   │
+│                 Category / Note / Vendor / Amount /         │
 │                 Currency / Amount (USD) / FX Rate /         │
-│                 Source / Trace ID)                          │
+│                 Source / Trace ID / Timestamp)              │
 │                 Conditional banding alternates rows by      │
 │                 month — visual breaks without inserting     │
 │                 separator rows that would break SUMIFS.     │
+│                                                             │
+│                 ``Month`` stores a full month name like     │
+│                 "April"; ``Year`` is a 4-digit number.      │
+│                 ``Timestamp`` (write time, far right) is    │
+│                 distinct from ``Date`` (expense time, far   │
+│                 left) — the gap surfaces backdated entries. │
 └─────────────────────────────────────────────────────────────┘
                               ▲
                               │ all formulas point here
@@ -289,6 +295,17 @@ builders, and a thin gspread adapter. Three tabs make up the picture:
   `sheets/data/sheet_format.yaml` controls colors, widths, freeze panes,
   number formats, name patterns. Column order, formula bodies, and the
   region layout live in Python where they're unit-testable.
+* **Visual emphasis: quiet baseline, loud non-zero cells.** Every
+  daily-grid cell is a SUMIFS that defaults to 0. Without emphasis the
+  grid is a sea of "0.00" — readable but flat. The ``emphasis`` block
+  in ``sheet_format.yaml`` defines a low-contrast baseline (light gray)
+  for empty cells and a bold + dark/blue conditional rule that fires
+  whenever a cell's value is greater than zero. Result: a normal day
+  visually fades; a day with real spending pops. Per-category totals
+  and the grand-total corner cell carry their own always-on loud
+  styles. (Note: Google Sheets' conditional-format API doesn't accept
+  font size, so the size of every grid cell is uniform — emphasis is
+  via weight + color only.)
 * **Backend abstraction.** `SheetsBackend` is a Protocol; the real one
   uses gspread, the test one is in-memory. Every layout assertion runs
   against the in-memory backend without hitting Google.
@@ -343,6 +360,11 @@ python -m expense_tracker --list-sheets
 
 # Build the Transactions master ledger (idempotent)
 python -m expense_tracker --init-transactions
+
+# Wipe + recreate Transactions (destructive — every row is lost).
+# Use after a column-layout change so the bot rebuilds the master
+# ledger with the new schema instead of refusing on a header mismatch.
+python -m expense_tracker --reinit-transactions
 
 # Build / rebuild a single monthly tab
 python -m expense_tracker --build-month 2026-04
@@ -497,7 +519,8 @@ expense-tracker-bot/
 2.5. **Chat history & tracing** — `ChatStore` protocol, JSONL impl, transparent tracing wrapper around any LLM client. **(done)**
 3. **Extractor** — Intent classification + schema-specific extraction (`ExpenseEntry` / `RetrievalQuery`), category registry, conversation-turn logging. **(done)**
 4. **Sheets foundation** — service account auth, master `Transactions` ledger, formula-driven monthly + YTD tabs, multi-currency conversion, `--build-month / --setup-year` CLI. **(done)**
-5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done — this commit)**
+5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done)**
+5.1. **Schema + visual polish** — Transactions reordered (Date | Day | Month | Year | Category | … | Timestamp). ``Month`` is now a human name ("April"), ``Year`` is a 4-digit int. ``Timestamp`` (bot-write time) moved to the far right so backdated entries read clearly. Daily grid + YTD grid now use a "quiet baseline / loud non-zero" emphasis. New ``expense --reinit-transactions`` for safe schema migrations. **(done — this commit)**
 6. Sheets reader + aggregator — answer retrieval queries by SUMIFS-equivalent reads.
 7. Telegram bot — wraps the CLI in a chat front-end.
 8. Polish — `--undo`, multi-turn clarification, weekly summaries.
