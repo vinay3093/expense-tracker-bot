@@ -179,7 +179,7 @@ def _reply_period_total(query: RetrievalQuery, answer: RetrievalAnswer) -> str:
     label = query.time_range.label
     head = (
         f"{label}: ${answer.total_usd:,.2f} across "
-        f"{answer.transaction_count} transactions."
+        f"{_pluralize_tx(answer.transaction_count)}."
     )
     top = _top_categories(answer, n=3)
     if top:
@@ -196,7 +196,7 @@ def _reply_category_total(query: RetrievalQuery, answer: RetrievalAnswer) -> str
     cat = query.category or "all categories"
     head = (
         f"{label} / {cat}: ${answer.total_usd:,.2f} across "
-        f"{answer.transaction_count} transactions."
+        f"{_pluralize_tx(answer.transaction_count)}."
     )
     if answer.largest is not None:
         head += " " + _largest_clause(answer.largest)
@@ -209,8 +209,7 @@ def _reply_day_detail(query: RetrievalQuery, answer: RetrievalAnswer) -> str:
     $12.50 (haircut)."""
     label = query.time_range.label
     head = (
-        f"{label}: {answer.transaction_count} "
-        f"transaction{'s' if answer.transaction_count != 1 else ''} "
+        f"{label}: {_pluralize_tx(answer.transaction_count)} "
         f"totaling ${answer.total_usd:,.2f}."
     )
     rows = sorted(answer.matched_rows, key=lambda r: -r.amount_usd)
@@ -223,14 +222,19 @@ def _reply_day_detail(query: RetrievalQuery, answer: RetrievalAnswer) -> str:
 
 
 def _reply_recent(query: RetrievalQuery, answer: RetrievalAnswer) -> str:
-    """e.g. "Last 5 (of 18 in April 2026): Sat 25 Apr Food $40
-    (Starbucks); Fri 24 Apr Groceries $35 (Costco); …"""
+    """e.g. "Last 5 of 18 in April 2026: Sat 25 Apr Food $40
+    (Starbucks); Fri 24 Apr Groceries $35 (Costco); …"
+
+    Singular / plural noun ("expense" vs "expenses") is matched to the
+    *displayed* count so "Last 1 …" reads naturally.
+    """
     label = query.time_range.label
     shown = len(answer.matched_rows)
     total_in_window = answer.transaction_count
-    head = f"Last {shown}"
+    noun = "expense" if shown == 1 else "expenses"
+    head = f"Last {shown} {noun}"
     if total_in_window != shown:
-        head += f" (of {total_in_window} in {label})"
+        head += f" of {total_in_window} in {label}"
     else:
         head += f" in {label}"
     head += ":"
@@ -324,6 +328,15 @@ def _row_clause(row: LedgerRow) -> str:
     if extras:
         base += " (" + ": ".join(extras) + ")"
     return base
+
+
+def _pluralize_tx(count: int) -> str:
+    """Return ``"1 transaction"`` / ``"N transactions"``.
+
+    Single source of truth for pluralizing the most common reply noun
+    so we never ship "1 transactions" again.
+    """
+    return f"{count} transaction" + ("" if count == 1 else "s")
 
 
 __all__ = ["format_reply"]

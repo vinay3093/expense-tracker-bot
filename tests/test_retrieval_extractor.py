@@ -6,6 +6,7 @@ import json
 from datetime import date
 
 from expense_tracker.extractor.categories import get_registry
+from expense_tracker.extractor.prompts import build_retrieval_system_prompt
 from expense_tracker.extractor.retrieval_extractor import RetrievalExtractor
 from expense_tracker.extractor.schemas import Intent
 
@@ -14,6 +15,38 @@ TODAY = date(2026, 4, 24)
 
 def _build(fake_llm) -> RetrievalExtractor:
     return RetrievalExtractor(llm=fake_llm, registry=get_registry())
+
+
+# ─── Prompt guidance pinning (regression: "last 5" interpreted as days) ──
+
+
+def test_retrieval_prompt_explains_last_n_means_count_not_days():
+    """We hit a real bug where the LLM turned "last 5 expenses" into a
+    5-day window. The prompt now spells out the correct behavior with
+    a worked example; pin that here so a future prompt edit can't
+    silently strip the guidance.
+    """
+    sys_prompt = build_retrieval_system_prompt(
+        today=TODAY, intent_value="query_recent", registry=get_registry(),
+    )
+
+    assert "limit=N" in sys_prompt
+    assert "NOT a number of days" in sys_prompt
+    assert "show me my last 5" in sys_prompt or "show me last 5" in sys_prompt
+    assert "this year" in sys_prompt
+
+
+def test_retrieval_prompt_lists_concrete_today_in_examples():
+    """The worked examples format TODAY into the example values so the
+    LLM sees a fully-resolved pattern, not abstract placeholders the
+    way it would under .format() with no anchor."""
+    sys_prompt = build_retrieval_system_prompt(
+        today=TODAY, intent_value="query_recent", registry=get_registry(),
+    )
+    # TODAY itself appears at least once for the date anchor + once in
+    # the worked-example body (we use a placeholder inside the example
+    # but TODAY anchors the surrounding rules).
+    assert TODAY.isoformat() in sys_prompt
 
 
 def test_extracts_period_total(fake_llm):

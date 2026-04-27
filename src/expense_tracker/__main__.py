@@ -114,6 +114,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     g_sheets.add_argument(
+        "--inspect-ledger",
+        action="store_true",
+        help=(
+            "Read the Transactions ledger and report any rows the parser "
+            "couldn't interpret (the rows hidden behind 'Skipped: N "
+            "unparseable row(s)' on retrieval queries). Prints the row "
+            "index, reason, and the offending cell values so you can fix "
+            "them in Sheets."
+        ),
+    )
+    g_sheets.add_argument(
         "--build-month",
         metavar="YYYY-MM",
         help="Build one monthly tab (e.g. 2026-04). Refuses if it exists.",
@@ -464,6 +475,51 @@ def _cmd_reinit_transactions(*, fake: bool) -> int:
         return 3
 
     print(f"  rebuilt        : rows={ws.row_count}, cols={ws.col_count}")
+    return 0
+
+
+def _cmd_inspect_ledger(*, fake: bool) -> int:
+    """Surface every row of the master ledger that the parser skipped.
+
+    Each retrieval query reports a count like ``Skipped: 1 unparseable
+    row(s)``; this command tells you *which* rows so you can clean them
+    up in the Sheets UI.
+    """
+    from .pipeline import RetrievalError, get_retrieval_engine
+    from .sheets import SheetsError
+
+    cfg = get_settings()
+    backend = _open_backend(cfg, fake=fake)
+    engine = get_retrieval_engine(settings=cfg, backend=backend)
+
+    try:
+        report = engine.inspect_ledger()
+    except (RetrievalError, SheetsError) as exc:
+        print(f"\n[sheets error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Ledger     : {report.sheet_name!r} in {backend.title!r}")
+    print(f"Total rows : {report.total_rows}")
+    print(f"  parsed   : {len(report.parsed)}")
+    print(f"  skipped  : {len(report.skipped)}")
+
+    if not report.skipped:
+        print("\nAll rows parsed cleanly.")
+        return 0
+
+    print("\nSkipped rows (fix these in the Sheets UI):")
+    for s in report.skipped:
+        print(f"  row {s.row_index:>4} :: {s.reason}")
+        non_empty = [v for v in s.raw_values if v.strip()]
+        preview = " | ".join(non_empty[:6])
+        if len(non_empty) > 6:
+            preview += " ..."
+        if preview:
+            print(f"            cells: {preview}")
+    print(
+        "\nTip: open the spreadsheet, jump to the row index above, "
+        "and either fix the Date / Amount (USD) cell or delete the row.",
+    )
     return 0
 
 
@@ -823,6 +879,8 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
         sys.exit(_cmd_init_transactions(fake=args.fake))
     if args.reinit_transactions:
         sys.exit(_cmd_reinit_transactions(fake=args.fake))
+    if args.inspect_ledger:
+        sys.exit(_cmd_inspect_ledger(fake=args.fake))
     if args.build_month is not None:
         sys.exit(_cmd_build_month(args.build_month, fake=args.fake, overwrite=False))
     if args.rebuild_month is not None:
@@ -860,6 +918,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     print(f"expense_tracker scaffold OK (v{__version__})")
     print("LLM     : --ping-llm | --extract \"…\"")
     print("Sheets  : --whoami | --list-sheets | --init-transactions | --reinit-transactions")
+    print("          --inspect-ledger")
     print("          --build-month YYYY-MM | --rebuild-month YYYY-MM")
     print("          --build-ytd YYYY      | --rebuild-ytd YYYY")
     print("          --setup-year YYYY [--overwrite] [--hide-previous]")

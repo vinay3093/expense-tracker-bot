@@ -473,3 +473,77 @@ def test_retrieval_each_intent_dispatches_through_format_reply(intent):
     msg = format_reply(result, retrieval_answer=answer)
     assert "April 2026" in msg
     assert "$12.50" in msg or "12.50" in msg
+
+
+# ─── Pluralization (regression: "1 transactions" → "1 transaction") ─────
+
+
+@pytest.mark.parametrize(
+    ("count", "expected_phrase"),
+    [
+        (0, "0 transactions"),
+        (1, "1 transaction"),
+        (2, "2 transactions"),
+        (42, "42 transactions"),
+    ],
+)
+def test_period_total_pluralizes_transaction_count(count, expected_phrase):
+    query = _april_query(Intent.QUERY_PERIOD_TOTAL)
+    rows = [_ledger_row() for _ in range(count)] if count else []
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_PERIOD_TOTAL,
+        query=query,
+        matched_rows=rows,
+        total_usd=12.5 * count,
+        transaction_count=count,
+        by_category={"Food": 12.5 * count} if count else {},
+        by_day={date(2026, 4, 24): 12.5 * count} if count else {},
+        largest=rows[0] if rows else None,
+    )
+    result = _result(Intent.QUERY_PERIOD_TOTAL, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    if count == 0:
+        assert "No expenses found" in msg
+    else:
+        assert expected_phrase in msg
+        assert "1 transactions" not in msg
+
+
+def test_category_total_pluralizes_singular():
+    query = _april_query(Intent.QUERY_CATEGORY_TOTAL, category="Food")
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_CATEGORY_TOTAL,
+        query=query,
+        matched_rows=[_ledger_row(category="Food", amount_usd=1.0)],
+        total_usd=1.0,
+        transaction_count=1,
+        by_category={"Food": 1.0},
+        by_day={date(2026, 4, 24): 1.0},
+        largest=_ledger_row(category="Food", amount_usd=1.0),
+    )
+    result = _result(Intent.QUERY_CATEGORY_TOTAL, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "1 transaction." in msg or "1 transaction " in msg
+    assert "1 transactions" not in msg
+
+
+def test_recent_pluralizes_expense_noun():
+    query = _april_query(Intent.QUERY_RECENT, limit=5)
+    one_row = [_ledger_row(category="Food", amount_usd=1.0)]
+    answer = RetrievalAnswer(
+        intent=Intent.QUERY_RECENT,
+        query=query,
+        matched_rows=one_row,
+        total_usd=1.0,
+        transaction_count=1,
+        by_category={"Food": 1.0},
+        by_day={date(2026, 4, 24): 1.0},
+        largest=one_row[0],
+    )
+    result = _result(Intent.QUERY_RECENT, query=query)
+    msg = format_reply(result, retrieval_answer=answer)
+
+    assert "Last 1 expense " in msg
+    assert "Last 1 expenses" not in msg

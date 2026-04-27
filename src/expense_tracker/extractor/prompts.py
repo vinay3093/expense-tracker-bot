@@ -94,10 +94,9 @@ Output a JSON object with these fields:
 - time_range — object with:
                  start  — YYYY-MM-DD inclusive
                  end    — YYYY-MM-DD inclusive
-                 label  — short human phrase, e.g. "April 2026", "last week"
+                 label  — short human phrase, e.g. "April 2026", "last week",
+                          "this year"
                Resolve relative phrases against TODAY = {today}.
-               For 'query_day', start == end.
-               For 'query_recent' with no time hint, span the whole CURRENT YEAR.
 - category   — canonical name from the list below, or null when the user did
                not narrow to a category.
 - vendor     — vendor / merchant name, or null.
@@ -107,14 +106,52 @@ Output a JSON object with these fields:
 
 INTENT to use: {intent_value}
 
-Rules:
+Rules — general:
 - Output VALID JSON only. No prose, no markdown fences.
-- Always emit 'time_range.start' and 'time_range.end' as concrete ISO dates.
+- Always emit 'time_range.start' and 'time_range.end' as concrete ISO dates,
+  and make sure end >= start.
 - 'this month' → first..last day of TODAY's month.
+- 'last month' → first..last day of the calendar month BEFORE TODAY's month.
 - 'last week' → most recent Monday..Sunday strictly before TODAY.
 - 'this year' → Jan 1..Dec 31 of TODAY's year.
 - A bare month name (e.g. 'April') means TODAY's year unless the user
-  specified a year."""
+  specified a year.
+
+Rules — query_recent (read carefully — this is the most common mistake):
+- In "last N transactions", "last N expenses", "show me last 5",
+  "previous 3", "most recent 4", the number N is a COUNT — set limit=N.
+  It is NOT a number of days. NEVER turn N into a date window.
+- For query_recent with NO explicit time phrase, span the WHOLE current
+  year: time_range.start = YYYY-01-01, time_range.end = TODAY,
+  label = "this year".
+- Only construct a narrower window when the user actually gives a time
+  phrase ("last 5 in April" → limit=5, label="April YYYY",
+  start/end = first/last of April YYYY; "last 3 last week" →
+  limit=3, label="last week", start/end = most recent Mon..Sun).
+- If the user says only "last 5" or "last 5 expenses" or "show me my
+  last 5", treat it as count=5, time_range = whole current year.
+
+Worked examples (for query_recent, with TODAY = {today}):
+  user: "show me my last 5 expenses"
+    -> {{"intent":"query_recent",
+        "time_range":{{"start":"<Jan 1 of TODAY's year>",
+                      "end":"<TODAY>",
+                      "label":"this year"}},
+        "category":null, "vendor":null, "limit":5}}
+
+  user: "last 3 in April"
+    -> {{"intent":"query_recent",
+        "time_range":{{"start":"<Apr 1 of TODAY's year>",
+                      "end":"<Apr 30 of TODAY's year>",
+                      "label":"April <YYYY>"}},
+        "category":null, "vendor":null, "limit":3}}
+
+  user: "previous 10 food expenses"
+    -> {{"intent":"query_recent",
+        "time_range":{{"start":"<Jan 1 of TODAY's year>",
+                      "end":"<TODAY>",
+                      "label":"this year"}},
+        "category":"Food", "vendor":null, "limit":10}}"""
 
 
 def build_retrieval_system_prompt(

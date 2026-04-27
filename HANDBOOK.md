@@ -1,6 +1,6 @@
 # Expense Tracker Bot — Project Handbook
 
-> **Last updated:** 2026-04-27 · **Code version:** Step 6 (retrieval queries)
+> **Last updated:** 2026-04-27 · **Code version:** Step 6.1 (retrieval polish)
 >
 > A complete top-to-bottom guide to this project: what it is, how every
 > external service was set up, what every line of configuration does,
@@ -766,6 +766,7 @@ expense --whoami             # show spreadsheet title + URL + service-account em
 expense --list-sheets        # list every spreadsheet the service account can see
 expense --init-transactions  # create the master Transactions tab (idempotent)
 expense --reinit-transactions# wipe + recreate Transactions (after a schema change)
+expense --inspect-ledger     # surface every row the parser couldn't read (with row index + reason)
 expense --build-month 2026-04
 expense --rebuild-month 2026-04   # delete + recreate
 expense --build-ytd 2026
@@ -1270,9 +1271,10 @@ to append a new column at the end and the existing rows stay valid
 | 5 | Chat → row writer | done |
 | 5.1 | Schema reorder + visual emphasis polish | done |
 | 6 | Sheets reader + retrieval queries | done |
+| 6.1 | Retrieval polish: pluralized replies, locale-tolerant amount parsing (`"1,000.00"`), `--inspect-ledger` diagnostic, sharper `query_recent` prompt | done |
 | 7 | Telegram bot front-end | done |
 | 7.1 | Self-healing + corrections (`/undo`, `/edit`) | done |
-| 8 | **Polish (multi-turn clarification, weekly summaries)** | **next** |
+| 8 | **Polish (weekly summaries, healthcheck, log rotation, multi-turn clarification)** | **next** |
 | ∞ | Hosting (Oracle Cloud Free Tier) | pending Noah's response |
 
 ### What "sellable" would require (out of current scope)

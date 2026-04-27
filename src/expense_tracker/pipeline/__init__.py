@@ -47,10 +47,12 @@ from .factory import (
 from .logger import ExpenseLogger, LogResult
 from .reply import format_reply
 from .retrieval import (
+    LedgerInspection,
     LedgerRow,
     RetrievalAnswer,
     RetrievalEngine,
     RetrievalError,
+    SkippedRow,
 )
 
 __all__ = [
@@ -62,12 +64,14 @@ __all__ = [
     "ExpenseLogError",
     "ExpenseLogger",
     "InconsistentExtractionError",
+    "LedgerInspection",
     "LedgerRow",
     "LogResult",
     "PipelineError",
     "RetrievalAnswer",
     "RetrievalEngine",
     "RetrievalError",
+    "SkippedRow",
     "UndoResult",
     "format_reply",
     "get_chat_pipeline",

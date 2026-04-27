@@ -19,10 +19,12 @@ import pytest
 from expense_tracker.extractor.categories import get_registry
 from expense_tracker.extractor.schemas import Intent, RetrievalQuery, TimeRange
 from expense_tracker.pipeline.retrieval import (
+    LedgerInspection,
     LedgerRow,
     RetrievalAnswer,
     RetrievalEngine,
     RetrievalError,
+    SkippedRow,
     _parse_ledger_row,
 )
 from expense_tracker.sheets.backend import FakeSheetsBackend
@@ -357,6 +359,157 @@ def test_unparseable_date_increments_skipped_count_does_not_crash():
     assert answer.transaction_count == 1
     assert answer.total_usd == pytest.approx(10.0)
     assert answer.skipped_rows == 1
+
+
+# ─── inspect_ledger: surface skipped rows for diagnostics ─────────────
+
+
+def test_inspect_ledger_clean_sheet_lists_only_parsed_rows():
+    engine = _engine_with_seed([
+        {"date": date(2026, 4, 1), "category": "Food", "amount": 10.0},
+        {"date": date(2026, 4, 2), "category": "Groceries", "amount": 35.0},
+    ])
+
+    report = engine.inspect_ledger()
+
+    assert isinstance(report, LedgerInspection)
+    assert report.sheet_name == "Transactions"
+    assert len(report.parsed) == 2
+    assert report.skipped == []
+    assert report.total_rows == 2
+
+
+def test_inspect_ledger_reports_each_skipped_row_with_index_and_reason():
+    """The whole point of --inspect-ledger: the operator should see
+    *which* row(s) and *why*, plus enough cell preview to find them."""
+    engine = _engine_with_seed([
+        {"date": date(2026, 4, 1), "category": "Food", "amount": 10.0},
+    ])
+
+    backend = engine._backend  # type: ignore[attr-defined]
+    ws = backend.get_worksheet("Transactions")
+    # Row 3: bad date.
+    ws.append_rows([[
+        "not-a-date", "Mon", "April", 2026, "Food", "", "Whole Foods", 8.0,
+        "USD", 8.0, 1.0, "manual", "", "",
+    ]])
+    # Row 4: good date but non-numeric Amount (USD).
+    ws.append_rows([[
+        "2026-04-05", "Sun", "April", 2026, "Food", "", "Costco", 12.0,
+        "USD", "oops", 1.0, "manual", "", "",
+    ]])
+
+    report = engine.inspect_ledger()
+
+    assert len(report.parsed) == 1
+    assert len(report.skipped) == 2
+    assert report.total_rows == 3
+
+    by_row = {s.row_index: s for s in report.skipped}
+    assert set(by_row.keys()) == {3, 4}
+
+    # Row 3: Date error names the offending value.
+    assert "Date" in by_row[3].reason
+    assert "not-a-date" in by_row[3].reason
+    assert "Whole Foods" in " ".join(by_row[3].raw_values)
+
+    # Row 4: Amount (USD) error names the offending value.
+    assert "Amount (USD)" in by_row[4].reason
+    assert "oops" in by_row[4].reason
+    assert "Costco" in " ".join(by_row[4].raw_values)
+
+
+def test_inspect_ledger_empty_or_missing_tab_yields_empty_report():
+    backend = FakeSheetsBackend(title="Test", spreadsheet_id="sid")
+    fmt = get_sheet_format()
+    engine = RetrievalEngine(
+        backend=backend, sheet_format=fmt, registry=get_registry(),
+    )
+
+    report = engine.inspect_ledger()
+
+    assert isinstance(report, LedgerInspection)
+    assert report.parsed == []
+    assert report.skipped == []
+    assert report.total_rows == 0
+
+
+def test_inspect_ledger_wraps_sheets_error_like_answer_does():
+    """Same failure mode as :meth:`answer` so the CLI catches one type."""
+    fmt = get_sheet_format()
+
+    class _BoomBackend:
+        title = "Boom"
+
+        def has_worksheet(self, name):
+            return True
+
+        def get_worksheet(self, name):
+            raise SheetsError("boom")
+
+    engine = RetrievalEngine(
+        backend=_BoomBackend(),  # type: ignore[arg-type]
+        sheet_format=fmt,
+        registry=get_registry(),
+    )
+
+    with pytest.raises(RetrievalError) as exc_info:
+        engine.inspect_ledger()
+    assert "Transactions" in str(exc_info.value)
+
+
+def test_skipped_row_dataclass_carries_full_diagnostic():
+    """Sanity check that :class:`SkippedRow` is what the CLI prints."""
+    s = SkippedRow(row_index=5, reason="Date cell '': empty", raw_values=["", "Mon"])
+    assert s.row_index == 5
+    assert "Date cell" in s.reason
+    assert s.raw_values == ["", "Mon"]
+
+
+# ─── Locale-formatted numeric cells (regression: "1,000.00") ──────────
+
+
+def test_amount_with_thousand_separator_parses():
+    """Regression: real Sheets cells came back as ``"1,000.00"`` and the
+    parser used to mark them unparseable. With locale-tolerant parsing
+    they now aggregate normally."""
+    engine = _engine_with_seed([
+        {"date": date(2026, 4, 5), "category": "House", "amount": 200.0},
+    ])
+    backend = engine._backend  # type: ignore[attr-defined]
+    ws = backend.get_worksheet("Transactions")
+    ws.append_rows([[
+        "2026-04-12", "Sun", "April", 2026, "House", "rent", "Landlord",
+        "1,000.00", "USD", "1,000.00", "1.0", "manual", "", "",
+    ]])
+    ws.append_rows([[
+        "2026-04-15", "Wed", "April", 2026, "Tesla Car", "FSD", "Tesla",
+        "$1,234.56", "USD", "$1,234.56", "1.0", "manual", "", "",
+    ]])
+
+    answer = engine.answer(_april_query(Intent.QUERY_PERIOD_TOTAL))
+
+    assert answer.transaction_count == 3
+    assert answer.skipped_rows == 0
+    assert answer.total_usd == pytest.approx(2434.56)
+
+
+def test_truly_non_numeric_amount_still_skips():
+    """Don't go too lazy — gibberish in Amount (USD) is still a skip."""
+    engine = _engine_with_seed([
+        {"date": date(2026, 4, 1), "category": "Food", "amount": 10.0},
+    ])
+    backend = engine._backend  # type: ignore[attr-defined]
+    ws = backend.get_worksheet("Transactions")
+    ws.append_rows([[
+        "2026-04-05", "Sun", "April", 2026, "Food", "", "Costco", 12.0,
+        "USD", "definitely not a number", 1.0, "manual", "", "",
+    ]])
+
+    report = engine.inspect_ledger()
+
+    assert len(report.skipped) == 1
+    assert "definitely not a number" in report.skipped[0].reason
 
 
 # ─── Underlying SheetsError surfaces as RetrievalError ─────────────────
