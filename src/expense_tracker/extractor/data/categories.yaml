@@ -65,12 +65,18 @@ categories:
        xray, mri, ent, gp, primary care, blood test, vaccine, health]
 
   - name: Shopping
-    hint: clothes, electronics, household goods, online orders
+    hint: clothes, electronics, household goods, online orders, AND personal-care PRODUCTS (shampoo, soap, toothpaste, deodorant, cosmetics — anything you BUY, even if it's used at a salon)
     aliases:
       [shopping, clothes, clothing, shirt, shirts, pants, dress, shoes,
        sneakers, electronics, amazon, amzn, flipkart, target, best buy,
        ikea, online order, accessories, watch, sunglasses, bag, purse,
-       handbag, jacket]
+       handbag, jacket,
+       # Personal-care products (the actual physical items you buy):
+       toiletries, toiletry, shampoo, conditioner, soap, body wash,
+       toothpaste, toothbrush, deodorant, perfume, cologne, lotion,
+       moisturizer, sunscreen, razor, razors, shaving cream, makeup,
+       cosmetics, lipstick, mascara, nail polish, hair oil, hair gel,
+       hair products, personal care]
 
   - name: Movies
     hint: theater movie tickets ONLY (Netflix etc. → Digital)
@@ -79,11 +85,12 @@ categories:
        movie ticket, movie tickets, theater ticket]
 
   - name: Saloon
-    hint: haircut, salon, spa, grooming, facial
+    hint: salon SERVICES paid at a salon/spa — haircut, facial, manicure, waxing, threading. NOT physical products like shampoo/soap (those are Shopping, even if used at a salon).
     aliases:
-      [saloon, salon, haircut, hair cut, hair, beard, trim, beard trim,
-       barber, spa, facial, manicure, pedicure, mani pedi, waxing,
-       threading, eyebrow, grooming, supercuts, great clips]
+      [saloon, salon, salon visit, haircut, hair cut, hair styling,
+       hair color, hair colour, highlights, beard trim, barber,
+       barber shop, spa, spa day, facial, manicure, pedicure, mani pedi,
+       waxing, threading, eyebrow threading, supercuts, great clips]
 
   - name: India Expense
     hint: money sent to India via Remitly / Wise; spending while in India

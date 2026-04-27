@@ -305,6 +305,116 @@ def append_transactions(
     return ws
 
 
+# ─── Last-row read / delete / edit (used by /undo & /edit) ─────────────
+
+@dataclass(frozen=True)
+class LastRow:
+    """Snapshot of the bottom-most data row in the Transactions tab.
+
+    The chat correction layer needs both the raw cell values (to echo
+    back to the user — "deleted: $40 Food on Apr 27") and the spreadsheet
+    row index (so it can call delete_rows / update on the right row).
+
+    Empty Transactions tab → ``row_index`` is ``None`` and ``values`` is
+    an empty list.
+    """
+
+    row_index: int | None
+    values: list[Any]
+
+    @property
+    def is_empty(self) -> bool:
+        return self.row_index is None
+
+    def value(self, key: str) -> Any:
+        """Project the raw row to a column by its schema key."""
+        if self.is_empty:
+            return None
+        idx = index_for(key)
+        if idx >= len(self.values):
+            return ""
+        return self.values[idx]
+
+
+def get_last_row(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+) -> LastRow:
+    """Return the bottom-most data row of the Transactions tab.
+
+    "Bottom-most" = highest 1-based row index whose ``Date`` column
+    (column A) is non-empty. Header row (row 1) is excluded.
+    """
+    name = sheet_format.transactions.sheet_name
+    if not backend.has_worksheet(name):
+        return LastRow(row_index=None, values=[])
+
+    ws = backend.get_worksheet(name)
+    last_col_letter = col_index_to_letter(len(TRANSACTIONS_COLUMNS) - 1)
+
+    date_col_letter = col_for("date")
+    date_values = ws.get_values(f"{date_col_letter}2:{date_col_letter}")
+
+    last_data_row_offset: int | None = None
+    for offset, row in enumerate(date_values):
+        cell = row[0] if row else ""
+        if cell not in ("", None):
+            last_data_row_offset = offset
+
+    if last_data_row_offset is None:
+        return LastRow(row_index=None, values=[])
+
+    sheet_row = 2 + last_data_row_offset
+    full_row = ws.get_values(f"A{sheet_row}:{last_col_letter}{sheet_row}")
+    values = full_row[0] if full_row else []
+    return LastRow(row_index=sheet_row, values=list(values))
+
+
+def delete_last_row(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+) -> LastRow:
+    """Delete the Transactions bottom-most data row, return its snapshot.
+
+    Returns the deleted row's snapshot so the caller can echo "deleted X"
+    or push it onto an undo-undo stack later. ``LastRow.is_empty == True``
+    means there was nothing to delete.
+    """
+    snap = get_last_row(backend, sheet_format)
+    if snap.is_empty:
+        return snap
+    ws = backend.get_worksheet(sheet_format.transactions.sheet_name)
+    assert snap.row_index is not None
+    ws.delete_rows(snap.row_index)
+    return snap
+
+
+def update_last_row_fields(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+    *,
+    updates: dict[str, Any],
+) -> LastRow:
+    """Patch named columns on the bottom-most data row.
+
+    ``updates`` is keyed by :class:`TransactionColumn.key` (e.g.
+    ``"category"``, ``"amount"``). Returns the *pre-edit* snapshot so
+    the chat layer can show a "changed X to Y" diff.
+    """
+    snap = get_last_row(backend, sheet_format)
+    if snap.is_empty:
+        return snap
+    ws = backend.get_worksheet(sheet_format.transactions.sheet_name)
+    assert snap.row_index is not None
+    for key, new_value in updates.items():
+        col_letter = col_for(key)
+        ws.update_values(
+            f"{col_letter}{snap.row_index}",
+            [[new_value]],
+        )
+    return snap
+
+
 def _apply_transactions_formatting(ws: WorksheetHandle, sheet_format: SheetFormat) -> None:
     """Apply header colors, freeze, widths, and the month-band rule."""
     fmt = sheet_format.transactions.formatting

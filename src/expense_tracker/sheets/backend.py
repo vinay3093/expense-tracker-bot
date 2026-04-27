@@ -116,6 +116,17 @@ class WorksheetHandle(Protocol):
     def append_rows(self, values: list[list[Any]]) -> None:
         """Append rows after the last non-empty row."""
 
+    def delete_rows(self, start_index: int, end_index: int | None = None) -> None:
+        """Delete one or more rows by 1-based index (inclusive).
+
+        If ``end_index`` is ``None`` only the single row at
+        ``start_index`` is removed. Subsequent rows shift up.
+
+        Used by the correction-pipeline (``/undo``) — Google Sheets
+        formulas reference the Transactions range, so removing a row
+        propagates through every dependent monthly / YTD tab.
+        """
+
     def clear(self) -> None:
         """Remove all values & formatting from the worksheet."""
 
@@ -265,6 +276,18 @@ class _FakeWorksheet:
     # ─── WorksheetHandle protocol ───
     def get_values(self, range_a1: str) -> list[list[Any]]:
         (r1, c1), (r2, c2) = parse_a1_range(range_a1)
+        # ``r2 == -1`` means an open-ended range like ``A2:A`` — scan
+        # to the last row that has a cell in any of the requested
+        # columns. Mirrors how Google Sheets resolves "A2:A".
+        if r2 == -1:
+            populated = [
+                r
+                for (r, c) in self._cells.keys()
+                if c1 <= c <= c2 and r >= r1
+            ]
+            if not populated:
+                return []
+            r2 = max(populated)
         out: list[list[Any]] = []
         for r in range(r1, r2 + 1):
             row: list[Any] = []
@@ -296,6 +319,25 @@ class _FakeWorksheet:
         # Grow row_count if needed.
         if used_rows and (next_row + len(values)) > self.row_count:
             self.row_count = next_row + len(values)
+
+    def delete_rows(self, start_index: int, end_index: int | None = None) -> None:
+        if start_index < 1:
+            raise ValueError(f"start_index must be >= 1, got {start_index}")
+        end = end_index if end_index is not None else start_index
+        if end < start_index:
+            raise ValueError(
+                f"end_index ({end}) must be >= start_index ({start_index})"
+            )
+        first = start_index - 1
+        last = end - 1
+        span = last - first + 1
+        new_cells: dict[tuple[int, int], Any] = {}
+        for (r, c), v in self._cells.items():
+            if r < first:
+                new_cells[(r, c)] = v
+            elif r > last:
+                new_cells[(r - span, c)] = v
+        self._cells = new_cells
 
     def clear(self) -> None:
         self._cells.clear()

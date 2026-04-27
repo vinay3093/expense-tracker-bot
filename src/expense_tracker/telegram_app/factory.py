@@ -18,12 +18,17 @@ from typing import TYPE_CHECKING
 
 from ..config import Settings, get_settings
 from ..pipeline.chat import ChatPipeline
+from ..pipeline.correction import CorrectionLogger
 from ..pipeline.factory import get_chat_pipeline
 from .auth import Authorizer, parse_allowed_users
 from .bot import (
+    CorrectionProcessor,
     MessageProcessor,
+    make_edit_handler,
+    make_last_handler,
     make_start_handler,
     make_text_handler,
+    make_undo_handler,
     make_whoami_handler,
 )
 
@@ -59,6 +64,26 @@ def build_processor(
         )
     pipeline = pipeline or get_chat_pipeline(cfg, fake=fake)
     return MessageProcessor(authorizer=authorizer, pipeline=pipeline)
+
+
+def build_correction_processor(
+    settings: Settings | None = None,
+    *,
+    pipeline: ChatPipeline | None = None,
+    fake: bool = False,
+) -> CorrectionProcessor:
+    """Build a :class:`CorrectionProcessor` for /last, /undo, /edit.
+
+    Reuses the chat pipeline's :class:`CorrectionLogger` when given so
+    we don't double-construct Sheets clients. Falls back to
+    :func:`get_chat_pipeline` to produce one — which guarantees the
+    same auth + sheet configuration the rest of the bot uses.
+    """
+    cfg = settings or get_settings()
+    authorizer = Authorizer(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
+    chat_pipeline = pipeline or get_chat_pipeline(cfg, fake=fake)
+    corrector: CorrectionLogger | None = chat_pipeline.corrector
+    return CorrectionProcessor(authorizer=authorizer, corrector=corrector)
 
 
 def build_application(
@@ -100,12 +125,22 @@ def build_application(
             'Run: pip install -e ".[telegram]"'
         ) from exc
 
-    processor = build_processor(cfg, pipeline=pipeline, fake=fake)
+    # Build the chat pipeline once and share it across processors so we
+    # don't construct two parallel Sheets clients (which would also
+    # double up on quota costs and FX cache state).
+    chat_pipeline = pipeline or get_chat_pipeline(cfg, fake=fake)
+    processor = build_processor(cfg, pipeline=chat_pipeline, fake=fake)
+    correction_processor = build_correction_processor(
+        cfg, pipeline=chat_pipeline, fake=fake,
+    )
 
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", make_start_handler()))
     app.add_handler(CommandHandler("help", make_start_handler()))
     app.add_handler(CommandHandler("whoami", make_whoami_handler()))
+    app.add_handler(CommandHandler("last", make_last_handler(correction_processor)))
+    app.add_handler(CommandHandler("undo", make_undo_handler(correction_processor)))
+    app.add_handler(CommandHandler("edit", make_edit_handler(correction_processor)))
     # Text messages that aren't commands flow through the chat pipeline.
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, make_text_handler(processor))
@@ -136,6 +171,7 @@ def run_polling(
 __all__ = [
     "TelegramConfigError",
     "build_application",
+    "build_correction_processor",
     "build_processor",
     "run_polling",
 ]

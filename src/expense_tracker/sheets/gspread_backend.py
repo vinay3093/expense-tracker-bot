@@ -185,6 +185,17 @@ class GspreadWorksheet:
         except self._gspread.exceptions.APIError as exc:
             raise _translate_api_error(exc, default=SheetsAPIError) from exc
 
+    def delete_rows(self, start_index: int, end_index: int | None = None) -> None:
+        end = end_index if end_index is not None else start_index
+        if start_index < 1 or end < start_index:
+            raise ValueError(
+                f"invalid row range: start={start_index!r}, end={end!r}"
+            )
+        try:
+            self._ws.delete_rows(start_index, end)
+        except self._gspread.exceptions.APIError as exc:
+            raise _translate_api_error(exc, default=SheetsAPIError) from exc
+
     def clear(self) -> None:
         try:
             self._ws.clear()

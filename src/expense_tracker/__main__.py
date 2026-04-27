@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import sys
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from pydantic import BaseModel
 
@@ -165,6 +165,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Run TEXT through the full chat pipeline and print the bot's "
             "reply along with a structured trace."
+        ),
+    )
+
+    # ─── Correction (undo / edit) ───────────────────────────────────────
+    g_fix = p.add_argument_group(
+        "Correction",
+        description=(
+            "Edit or remove the most-recently logged expense (the "
+            "bottom-most row of the Transactions tab). The relevant "
+            "monthly tab is auto-recomputed so the daily grid + "
+            "summary stay in sync."
+        ),
+    )
+    g_fix.add_argument(
+        "--undo",
+        action="store_true",
+        help="Delete the bottom-most Transactions row and recompute its month.",
+    )
+    g_fix.add_argument(
+        "--edit-amount",
+        metavar="AMOUNT",
+        type=float,
+        help=(
+            "Change the amount of the bottom-most row. Re-runs FX so "
+            "Amount (USD) stays consistent."
+        ),
+    )
+    g_fix.add_argument(
+        "--edit-category",
+        metavar="CATEGORY",
+        help=(
+            "Change the category of the bottom-most row. Aliases are "
+            "resolved (e.g. 'groceries' -> 'Groceries')."
         ),
     )
 
@@ -600,6 +633,103 @@ def _cmd_setup_year(
     return 0
 
 
+# ─── Correction (undo / edit) ──────────────────────────────────────────
+
+def _format_last_row_oneline(snap: Any) -> str:
+    """Compact one-line representation of a :class:`LastRow` snapshot.
+
+    Used by ``--undo`` / ``--edit-*`` to echo what was changed without
+    dumping the whole row. Defensive about missing fields — older rows
+    written under earlier schemas may have shorter ``values`` lists.
+    """
+    if snap.is_empty:
+        return "(empty Transactions tab)"
+    date_v = snap.value("date")
+    cat_v = snap.value("category")
+    amount_v = snap.value("amount")
+    currency_v = snap.value("currency")
+    return f"{date_v} | {cat_v} | {amount_v} {currency_v} (row {snap.row_index})"
+
+
+def _cmd_undo(*, fake: bool) -> int:
+    from .pipeline import CorrectionError, get_correction_logger
+    from .sheets import SheetsError
+
+    cfg = get_settings()
+    print(f"Backend  : {'fake' if fake else 'gspread'}")
+
+    try:
+        corrector = get_correction_logger(cfg, fake=fake)
+    except (LLMError, SheetsError) as exc:
+        print(f"\n[config error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        peek = corrector.peek_last()
+    except CorrectionError as exc:
+        print(f"\n[sheets error] {exc}", file=sys.stderr)
+        return 3
+
+    if peek.is_empty:
+        print("\nNothing to undo — Transactions tab is empty.")
+        return 0
+
+    print(f"\nAbout to delete : {_format_last_row_oneline(peek)}")
+
+    try:
+        result = corrector.undo()
+    except CorrectionError as exc:
+        print(f"\n[undo error] {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Deleted         : {_format_last_row_oneline(result.deleted_row)}")
+    if result.monthly_tab and result.monthly_tab_recomputed:
+        print(f"Recomputed tab  : {result.monthly_tab}")
+    elif result.monthly_tab is None:
+        print("Recompute       : skipped (no matching monthly tab)")
+    return 0
+
+
+def _cmd_edit(
+    *, fake: bool, amount: float | None, category: str | None,
+) -> int:
+    from .pipeline import CorrectionError, get_correction_logger
+    from .sheets import SheetsError
+
+    cfg = get_settings()
+    print(f"Backend  : {'fake' if fake else 'gspread'}")
+
+    try:
+        corrector = get_correction_logger(cfg, fake=fake)
+    except (LLMError, SheetsError) as exc:
+        print(f"\n[config error] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        result = corrector.edit(amount=amount, category=category)
+    except CorrectionError as exc:
+        print(f"\n[edit error] {exc}", file=sys.stderr)
+        return 3
+
+    if result.before.is_empty:
+        print("\nNothing to edit — Transactions tab is empty.")
+        return 0
+
+    print(f"\nBefore          : {_format_last_row_oneline(result.before)}")
+    if not result.applied:
+        print("(no fields applied — nothing to do)")
+        return 0
+    pretty_updates = ", ".join(
+        f"{k}={v!r}" for k, v in result.applied.items()
+    )
+    print(f"Applied         : {pretty_updates}")
+    if result.monthly_tab and result.monthly_tab_recomputed:
+        print(f"Recomputed tab  : {result.monthly_tab}")
+    elif result.monthly_tab is None:
+        print("Recompute       : skipped (no matching monthly tab)")
+    return 0
+
+
 # ─── Telegram bot ──────────────────────────────────────────────────────
 
 def _cmd_telegram(*, fake: bool) -> int:
@@ -692,6 +822,16 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     if args.chat is not None:
         sys.exit(_cmd_chat(args.chat, fake=args.fake))
 
+    # Correction (undo / edit).
+    if args.undo:
+        sys.exit(_cmd_undo(fake=args.fake))
+    if args.edit_amount is not None or args.edit_category is not None:
+        sys.exit(_cmd_edit(
+            fake=args.fake,
+            amount=args.edit_amount,
+            category=args.edit_category,
+        ))
+
     # Telegram bot.
     if args.telegram:
         sys.exit(_cmd_telegram(fake=args.fake))
@@ -703,6 +843,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     print("          --build-ytd YYYY      | --rebuild-ytd YYYY")
     print("          --setup-year YYYY [--overwrite] [--hide-previous]")
     print("Chat    : --chat \"spent 40 on coffee yesterday\"")
+    print("Fix     : --undo | --edit-amount 50 | --edit-category Groceries")
     print("Telegram: --telegram        (run the bot)")
     print("Add --fake to any Sheets / chat / telegram command to run offline.")
     sys.exit(0)

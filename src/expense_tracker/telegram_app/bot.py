@@ -31,6 +31,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..pipeline.chat import ChatPipeline, ChatTurn
+from ..pipeline.correction import (
+    CorrectionError,
+    CorrectionLogger,
+    EditResult,
+    UndoResult,
+)
+from ..sheets.transactions import LastRow
 from .auth import AuthDecision, Authorizer
 
 if TYPE_CHECKING:
@@ -49,8 +56,32 @@ _WELCOME_TEXT = (
     "  • spent 40 on coffee today\n"
     "  • 1500 INR groceries yesterday at Costco\n"
     "  • bought a tesla supercharge for $12.50\n\n"
-    "I'll log it into your Google Sheet and confirm. "
-    "I can also chat back if you ask normal questions."
+    "I'll log it into your Google Sheet and confirm.\n\n"
+    "Fix the last entry:\n"
+    "  /undo                  delete the last logged expense\n"
+    "  /edit amount 50        change the amount to 50\n"
+    "  /edit category Food    change the category (aliases OK)\n"
+    "  /last                  show the last entry without changing it"
+)
+
+
+# User-facing reply for /undo / /edit when the ledger is empty. Phrased
+# the same way both commands hit so the muscle memory is "I'll just
+# tell you nothing's there" rather than two slightly-different errors.
+_EMPTY_LEDGER_REPLY = (
+    "Nothing to fix — your Transactions tab is empty (or hasn't been "
+    "created yet)."
+)
+
+
+# Generic "couldn't fix it" reply we surface when the underlying Sheets
+# / FX layer raises. Stack traces stay in the logs; the user sees a
+# short apology + a hint at what to try.
+_FIX_FAILED_TEMPLATE = (
+    "Sorry — couldn't apply that change.\n"
+    "Reason: {reason}\n"
+    "Try again in a moment, or run `expense --whoami` from the laptop "
+    "to check the connection."
 )
 
 
@@ -116,6 +147,227 @@ class MessageProcessor:
             )
 
         return ProcessedMessage(reply_text=turn.bot_reply, chat_turn=turn)
+
+
+# ─── Correction processor (/last, /undo, /edit) ────────────────────────
+
+# Same pattern as :class:`MessageProcessor` — pure-Python wrapper around
+# :class:`CorrectionLogger`. Telegram-side handlers (below) just turn
+# Telegram updates into method calls and stringify the result.
+
+
+def _format_last_row_pretty(snap: LastRow) -> str:
+    """Multi-line summary of a :class:`LastRow` for chat replies.
+
+    Defensive: rows written under older schemas may have shorter
+    ``values`` lists, in which case ``snap.value()`` returns ``None``
+    and we just print "?" rather than crashing.
+    """
+    if snap.is_empty:
+        return "(empty)"
+    lines = [
+        f"  Date     : {snap.value('date') or '?'}",
+        f"  Day      : {snap.value('day') or '?'}",
+        f"  Category : {snap.value('category') or '?'}",
+        (
+            f"  Amount   : {snap.value('amount') or '?'} "
+            f"{snap.value('currency') or '?'}"
+        ),
+        f"  USD      : {snap.value('amount_usd') or '?'}",
+    ]
+    note = snap.value("note")
+    if note:
+        lines.append(f"  Note     : {note}")
+    return "\n".join(lines)
+
+
+class CorrectionProcessor:
+    """Pure-Python orchestrator for /last, /undo, /edit Telegram turns.
+
+    Constructed with an :class:`Authorizer` and an optional
+    :class:`CorrectionLogger` (it's optional because tests + dev modes
+    that don't need the corrector can still build a bot). When the
+    logger is missing every command replies with a friendly "feature
+    not configured" message instead of crashing.
+    """
+
+    def __init__(
+        self,
+        *,
+        authorizer: Authorizer,
+        corrector: CorrectionLogger | None,
+    ) -> None:
+        self._auth = authorizer
+        self._corrector = corrector
+
+    # ─── /last ────────────────────────────────────────────────────────
+
+    def process_last(self, *, user_id: int | None) -> str:
+        denied = self._maybe_deny(user_id)
+        if denied is not None:
+            return denied
+        if self._corrector is None:
+            return self._unconfigured_reply()
+        try:
+            snap = self._corrector.peek_last()
+        except CorrectionError as exc:
+            _log.warning("/last failed: %s", exc)
+            return _FIX_FAILED_TEMPLATE.format(reason=str(exc))
+        if snap.is_empty:
+            return _EMPTY_LEDGER_REPLY
+        return f"Last logged expense:\n{_format_last_row_pretty(snap)}"
+
+    # ─── /undo ────────────────────────────────────────────────────────
+
+    def process_undo(self, *, user_id: int | None) -> str:
+        denied = self._maybe_deny(user_id)
+        if denied is not None:
+            return denied
+        if self._corrector is None:
+            return self._unconfigured_reply()
+        try:
+            result = self._corrector.undo()
+        except CorrectionError as exc:
+            _log.warning("/undo failed: %s", exc)
+            return _FIX_FAILED_TEMPLATE.format(reason=str(exc))
+        if result.deleted_row.is_empty:
+            return _EMPTY_LEDGER_REPLY
+        return self._format_undo_reply(result)
+
+    # ─── /edit ────────────────────────────────────────────────────────
+
+    def process_edit(self, *, user_id: int | None, args_text: str) -> str:
+        denied = self._maybe_deny(user_id)
+        if denied is not None:
+            return denied
+        if self._corrector is None:
+            return self._unconfigured_reply()
+
+        parsed = _parse_edit_args(args_text)
+        if isinstance(parsed, str):
+            return parsed  # parse error message
+        amount, category = parsed
+
+        try:
+            result = self._corrector.edit(amount=amount, category=category)
+        except CorrectionError as exc:
+            _log.warning("/edit failed: %s", exc)
+            return _FIX_FAILED_TEMPLATE.format(reason=str(exc))
+        if result.before.is_empty:
+            return _EMPTY_LEDGER_REPLY
+        return self._format_edit_reply(result)
+
+    # ─── Helpers ──────────────────────────────────────────────────────
+
+    def _maybe_deny(self, user_id: int | None) -> str | None:
+        decision = self._auth.check(user_id)
+        if not decision.allowed:
+            return _format_auth_denied(decision)
+        return None
+
+    @staticmethod
+    def _unconfigured_reply() -> str:
+        # Belt-and-braces: users should never hit this path because
+        # build_application() always wires a corrector, but keep the
+        # message friendly in case someone constructs a processor
+        # directly in tests.
+        return (
+            "Correction commands aren't configured for this bot. "
+            "Re-run `expense --telegram` from the laptop."
+        )
+
+    @staticmethod
+    def _format_undo_reply(result: UndoResult) -> str:
+        deleted = result.deleted_row
+        date_v = deleted.value("date") or "?"
+        cat_v = deleted.value("category") or "?"
+        amt_v = deleted.value("amount") or "?"
+        cur_v = deleted.value("currency") or "?"
+        lines = [
+            "Deleted last expense:",
+            f"  {date_v} | {cat_v} | {amt_v} {cur_v}",
+        ]
+        if result.monthly_tab and result.monthly_tab_recomputed:
+            lines.append(f"Refreshed `{result.monthly_tab}` so totals stay in sync.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_edit_reply(result: EditResult) -> str:
+        before = result.before
+        applied = result.applied
+        lines = ["Updated last expense:"]
+        if "amount" in applied:
+            lines.append(
+                f"  Amount   : {before.value('amount') or '?'} "
+                f"{before.value('currency') or '?'} -> "
+                f"{applied['amount']} "
+                f"{before.value('currency') or '?'}"
+            )
+            usd = applied.get("amount_usd")
+            if usd is not None:
+                lines.append(f"  USD      : -> ${usd:.2f}")
+        if "category" in applied:
+            lines.append(
+                f"  Category : {before.value('category') or '?'} -> "
+                f"{applied['category']}"
+            )
+        if result.monthly_tab and result.monthly_tab_recomputed:
+            lines.append(f"Refreshed `{result.monthly_tab}` so totals stay in sync.")
+        return "\n".join(lines)
+
+
+def _parse_edit_args(args_text: str) -> tuple[float | None, str | None] | str:
+    """Parse a ``/edit ...`` payload into ``(amount, category)``.
+
+    Returns either the parsed pair or a user-facing error string. Two
+    forms supported, matching what feels natural to type on a phone::
+
+        /edit amount 50
+        /edit amount 50 INR
+        /edit category Groceries
+        /edit category India Expense
+
+    Note: currency in ``amount`` form is currently a parse-friendly
+    stub — we always reuse the row's original currency, since editing
+    the currency too is rare and ambiguous (did you mean to convert?).
+    Telling the user about that intent in plain English keeps the
+    surface tiny without surprising them.
+    """
+    cleaned = args_text.strip()
+    if not cleaned:
+        return _EDIT_USAGE_REPLY
+
+    parts = cleaned.split(maxsplit=1)
+    head = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if head == "amount":
+        if not rest:
+            return "Usage: /edit amount 50  (positive number)"
+        # First whitespace-separated token is the number; anything
+        # after is currently ignored with a heads-up below.
+        num_str = rest.split()[0]
+        try:
+            amount = float(num_str)
+        except ValueError:
+            return f"Couldn't parse `{num_str}` as a number."
+        if amount <= 0:
+            return f"Amount must be positive — got {amount}."
+        return amount, None
+
+    if head == "category":
+        if not rest:
+            return "Usage: /edit category Groceries"
+        return None, rest
+
+    return _EDIT_USAGE_REPLY
+
+
+_EDIT_USAGE_REPLY = (
+    "Usage:\n"
+    "  /edit amount 50\n"
+    "  /edit category Groceries"
+)
 
 
 # ─── Telegram-SDK glue ──────────────────────────────────────────────────
@@ -224,6 +476,74 @@ def make_whoami_handler():
     return handle_whoami
 
 
+def make_last_handler(processor: CorrectionProcessor):
+    """``/last`` — show the bottom-most Transactions row, no changes."""
+
+    async def handle_last(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        await _send_typing(update)
+        reply = await asyncio.to_thread(processor.process_last, user_id=user_id)
+        await _reply_safely(update, reply)
+
+    return handle_last
+
+
+def make_undo_handler(processor: CorrectionProcessor):
+    """``/undo`` — delete the bottom-most Transactions row."""
+
+    async def handle_undo(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        await _send_typing(update)
+        reply = await asyncio.to_thread(processor.process_undo, user_id=user_id)
+        await _reply_safely(update, reply)
+
+    return handle_undo
+
+
+def make_edit_handler(processor: CorrectionProcessor):
+    """``/edit ...`` — patch the bottom-most Transactions row.
+
+    Args after the command get parsed by
+    :func:`_parse_edit_args`; usage replies live there.
+    """
+
+    async def handle_edit(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        msg = update.effective_message
+        if msg is None or msg.text is None:
+            return
+        # Strip the leading "/edit" (and optional "@bot_username").
+        # Whatever remains is the args payload the processor parses.
+        text = msg.text.strip()
+        space_idx = text.find(" ")
+        args_text = text[space_idx + 1 :] if space_idx >= 0 else ""
+
+        await _send_typing(update)
+        reply = await asyncio.to_thread(
+            processor.process_edit,
+            user_id=user_id,
+            args_text=args_text,
+        )
+        await _reply_safely(update, reply)
+
+    return handle_edit
+
+
 def _format_auth_denied(decision: AuthDecision) -> str:
     """User-facing message for an auth-rejected update."""
     if decision.user_id is None:
@@ -239,9 +559,13 @@ def _format_auth_denied(decision: AuthDecision) -> str:
 
 
 __all__ = [
+    "CorrectionProcessor",
     "MessageProcessor",
     "ProcessedMessage",
+    "make_edit_handler",
+    "make_last_handler",
     "make_start_handler",
     "make_text_handler",
+    "make_undo_handler",
     "make_whoami_handler",
 ]

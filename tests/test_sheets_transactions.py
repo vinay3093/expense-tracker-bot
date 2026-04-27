@@ -256,6 +256,144 @@ def test_reinit_creates_tab_when_missing():
     ]
 
 
+# ─── get_last_row / delete_last_row / update_last_row_fields ───────────
+
+
+def _seed_two_rows(backend, fmt) -> None:
+    """Append two rows so we can assert "bottom-most" semantics."""
+    rows = [
+        TransactionRow(
+            date=date(2026, 4, 24),
+            day="Fri",
+            month="April",
+            year=2026,
+            category="Food",
+            note="coffee",
+            vendor="Starbucks",
+            amount=4.5,
+            currency="USD",
+            amount_usd=4.5,
+            fx_rate=1.0,
+            timestamp=datetime(2026, 4, 24, 12, 0),
+        ),
+        TransactionRow(
+            date=date(2026, 4, 25),
+            day="Sat",
+            month="April",
+            year=2026,
+            category="Saloon",
+            note="haircut",
+            vendor="Supercuts",
+            amount=30.0,
+            currency="USD",
+            amount_usd=30.0,
+            fx_rate=1.0,
+            timestamp=datetime(2026, 4, 25, 14, 30),
+        ),
+    ]
+    append_transactions(backend, fmt, rows)
+
+
+def test_get_last_row_returns_bottom_most_data_row():
+    from expense_tracker.sheets.transactions import get_last_row
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    _seed_two_rows(b, fmt)
+
+    snap = get_last_row(b, fmt)
+    assert snap.is_empty is False
+    assert snap.row_index == 3  # header row + two data rows
+    assert snap.value("category") == "Saloon"
+    assert snap.value("amount") == 30.0
+    assert snap.value("date") == "2026-04-25"
+
+
+def test_get_last_row_handles_empty_tab():
+    from expense_tracker.sheets.transactions import get_last_row
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    init_transactions_tab(b, fmt)
+
+    snap = get_last_row(b, fmt)
+    assert snap.is_empty
+    assert snap.row_index is None
+    assert snap.values == []
+
+
+def test_get_last_row_handles_missing_tab():
+    from expense_tracker.sheets.transactions import get_last_row
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    snap = get_last_row(b, fmt)
+    assert snap.is_empty
+
+
+def test_delete_last_row_removes_bottom_row_only():
+    from expense_tracker.sheets.transactions import delete_last_row, get_last_row
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    _seed_two_rows(b, fmt)
+
+    deleted = delete_last_row(b, fmt)
+    assert deleted.value("category") == "Saloon"
+
+    # The previous row should now be the new bottom-most.
+    snap = get_last_row(b, fmt)
+    assert snap.row_index == 2
+    assert snap.value("category") == "Food"
+
+
+def test_delete_last_row_on_empty_returns_empty_snap():
+    from expense_tracker.sheets.transactions import delete_last_row
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    init_transactions_tab(b, fmt)
+
+    snap = delete_last_row(b, fmt)
+    assert snap.is_empty
+
+
+def test_update_last_row_fields_patches_only_named_cols():
+    from expense_tracker.sheets.transactions import (
+        get_last_row,
+        update_last_row_fields,
+    )
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    _seed_two_rows(b, fmt)
+
+    before = update_last_row_fields(
+        b, fmt, updates={"category": "Shopping", "amount": 50.0},
+    )
+    assert before.value("category") == "Saloon"  # pre-edit snapshot
+    assert before.value("amount") == 30.0
+
+    after = get_last_row(b, fmt)
+    assert after.row_index == before.row_index  # same row, in-place
+    assert after.value("category") == "Shopping"
+    assert after.value("amount") == 50.0
+    # Untouched columns survive the patch.
+    assert after.value("note") == "haircut"
+    assert after.value("currency") == "USD"
+
+
+def test_update_last_row_fields_on_empty_is_noop():
+    from expense_tracker.sheets.transactions import update_last_row_fields
+
+    b = FakeSheetsBackend()
+    fmt = SheetFormat.from_dict({})
+    init_transactions_tab(b, fmt)
+
+    snap = update_last_row_fields(b, fmt, updates={"category": "Food"})
+    assert snap.is_empty
+
+
 def test_reinit_wipes_existing_rows():
     """The whole point of reinit: throw away existing data."""
     from expense_tracker.sheets.transactions import reinit_transactions_tab

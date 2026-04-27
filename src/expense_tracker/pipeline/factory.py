@@ -14,6 +14,7 @@ from ..sheets.currency import CurrencyConverter, get_converter
 from ..sheets.factory import get_sheets_backend
 from ..sheets.format import SheetFormat, get_sheet_format
 from .chat import ChatPipeline
+from .correction import CorrectionLogger
 from .logger import ExpenseLogger
 
 
@@ -52,10 +53,50 @@ def get_chat_pipeline(
         source="chat",
     )
 
+    correction_logger = CorrectionLogger(
+        backend=backend,
+        sheet_format=fmt,
+        registry=registry,
+        converter=converter,
+    )
+
     return ChatPipeline(
         orchestrator=orchestrator,
         expense_logger=expense_logger,
+        correction_logger=correction_logger,
     )
 
 
-__all__ = ["get_chat_pipeline"]
+def get_correction_logger(
+    settings: Settings | None = None,
+    *,
+    fake: bool = False,
+    backend: SheetsBackend | None = None,
+    sheet_format: SheetFormat | None = None,
+    converter: CurrencyConverter | None = None,
+) -> CorrectionLogger:
+    """Wire a standalone :class:`CorrectionLogger` for ad-hoc CLI use.
+
+    Mirrors :func:`get_chat_pipeline` but skips the LLM-side
+    orchestrator / chat-reply formatter — ``--undo`` / ``--edit-*``
+    don't need them. Tests / advanced callers can inject any of the
+    deps to short-circuit factory calls.
+    """
+    cfg = settings or get_settings()
+    fmt = sheet_format or get_sheet_format()
+    backend = backend or get_sheets_backend(cfg, fake=fake)
+    registry = get_registry()
+    converter = converter or get_converter(
+        primary_currency=cfg.DEFAULT_CURRENCY,
+        log_dir=cfg.LOG_DIR,
+        timeout_s=cfg.SHEETS_TIMEOUT_S,
+    )
+    return CorrectionLogger(
+        backend=backend,
+        sheet_format=fmt,
+        registry=registry,
+        converter=converter,
+    )
+
+
+__all__ = ["get_chat_pipeline", "get_correction_logger"]

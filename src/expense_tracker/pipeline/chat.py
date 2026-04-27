@@ -36,6 +36,7 @@ from typing import Any
 
 from ..extractor.orchestrator import Orchestrator
 from ..extractor.schemas import ExtractionResult, Intent
+from .correction import CorrectionLogger
 from .exceptions import ExpenseLogError, InconsistentExtractionError, PipelineError
 from .logger import ExpenseLogger, LogResult
 from .reply import format_reply
@@ -85,9 +86,21 @@ class ChatPipeline:
         *,
         orchestrator: Orchestrator,
         expense_logger: ExpenseLogger,
+        correction_logger: CorrectionLogger | None = None,
     ) -> None:
         self._orch = orchestrator
         self._logger = expense_logger
+        self._corrector = correction_logger
+
+    @property
+    def corrector(self) -> CorrectionLogger | None:
+        """Optional :class:`CorrectionLogger` for ``/undo`` / ``/edit``.
+
+        ``None`` only when the pipeline was constructed without one
+        (older tests). Production code paths always wire one in via
+        :func:`get_chat_pipeline`.
+        """
+        return self._corrector
 
     def chat(self, user_text: str) -> ChatTurn:
         """Run one turn end-to-end and return a :class:`ChatTurn`."""

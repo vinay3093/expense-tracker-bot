@@ -223,6 +223,11 @@ def test_build_application_registers_expected_handlers() -> None:
     )
 
     class _StubChatPipeline:
+        # Mirror the real ChatPipeline contract just enough for
+        # build_application: a .chat() method we never invoke and a
+        # .corrector attribute the correction processor pulls.
+        corrector = None
+
         def chat(self, text):
             raise AssertionError("not invoked in this test")
 
@@ -233,7 +238,7 @@ def test_build_application_registers_expected_handlers() -> None:
     for h in handlers:
         if isinstance(h, CommandHandler) and h.commands:
             command_names.update(h.commands)
-    assert command_names == {"start", "help", "whoami"}
+    assert command_names == {"start", "help", "whoami", "last", "undo", "edit"}
 
     message_handlers = [h for h in handlers if isinstance(h, MessageHandler)]
     assert len(message_handlers) == 1, (

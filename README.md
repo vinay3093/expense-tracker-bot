@@ -6,13 +6,13 @@ manually — one row per day, one column per category, daily totals on the right
 column totals at the bottom. The same bot also answers retrieval questions
 ("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
 
-> **Status:** Step 5 of 9 complete — chat → row writer is live. Type
-> `expense --chat "spent 12.50 on coffee at starbucks today"` and one
-> row lands in the master `Transactions` ledger; the right monthly tab
-> is auto-created if it's the first transaction of the month; foreign
-> currencies (e.g. INR) are converted to USD on the way in. The same
-> command also handles smalltalk and parses retrieval questions
-> (answering them lands in Step 6).
+> **Status:** Step 7.1 — Telegram bot + self-healing correction is live.
+> DM the bot ("spent 40 on coffee today") and one row lands in your
+> Sheet; type `/undo` to delete the last entry, or `/edit amount 50`
+> to change it; the affected monthly tab is auto-recomputed so totals
+> stay in sync. Foreign currencies (e.g. INR) are converted to USD on
+> the way in, and re-converted on amount edits. Step 6 (retrieval
+> queries) is the next milestone.
 
 ## Why this exists
 
@@ -478,6 +478,56 @@ expense --telegram
 `/start` and `/help` show a short usage hint. `/whoami` always works
 (even for non-allowed users) so you can bootstrap the allow-list.
 
+### Fixing wrong entries (self-healing)
+
+Three commands target the **bottom-most** row of `Transactions` —
+i.e. the most recently logged expense — and each one transparently
+re-runs the affected monthly tab so totals stay in sync:
+
+```
+/last                show the last entry without changing it
+/undo                delete the last entry
+/edit amount 50      change the amount to 50 (re-runs FX automatically)
+/edit category Food  change the category (aliases like "groceries"
+                     resolve to canonical "Groceries")
+```
+
+Worked example:
+
+```
+You    : got shampoo for my wife which cost 100$
+Bot    : Logged $100 to Saloon ...    ← bot guessed wrong
+You    : /edit category Shopping
+Bot    : Updated last expense:
+          Category : Saloon -> Shopping
+         Refreshed `April 2026` so totals stay in sync.
+```
+
+`/edit amount X` re-runs currency conversion against the original
+row's currency + date — so editing a 1500 INR row to 2000 INR
+produces a fresh `Amount (USD)` and `FX Rate` without you having to
+think about it. Editing the currency itself is intentionally not
+supported (rare and ambiguous: "convert" or "swap"?). If you need
+that, `/undo` and re-log.
+
+The same operations are available from the laptop too, with no
+Telegram needed:
+
+```bash
+expense --undo
+expense --edit-amount 50
+expense --edit-category Shopping
+expense --edit-amount 50 --edit-category Shopping   # combine
+```
+
+Why this works at all: a Google-Sheets quirk leaves cached formula
+results stale when API writes hit the underlying data. Both `/undo`
+and `/edit` (and every plain log) end with a "nudge" that re-writes
+the headline summary + daily-total formulas on the affected monthly
+tab. The user-facing recompute is best-effort: if the nudge fails
+the user-visible operation is still reported successful, with a log
+warning for follow-up.
+
 ### Auth model
 
 The allow-list is **explicit** — `TELEGRAM_ALLOWED_USERS` is a
@@ -547,15 +597,16 @@ expense-tracker-bot/
 │       │   ├── exceptions.py      ← SheetsError hierarchy
 │       │   └── data/sheet_format.yaml
 │       ├── pipeline/             # chat → row writer (Step 5)
-│       │   ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append)
+│       │   ├── logger.py           ← ExpenseLogger + LogResult (FX + ensure_tab + append + recompute nudge)
+│       │   ├── correction.py       ← CorrectionLogger / UndoResult / EditResult (Step 7.1)
 │       │   ├── reply.py            ← format_reply() — pure user-facing reply builder
 │       │   ├── chat.py             ← ChatPipeline + ChatTurn (orchestrates one turn end-to-end)
-│       │   ├── factory.py          ← get_chat_pipeline()
-│       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / InconsistentExtraction
+│       │   ├── factory.py          ← get_chat_pipeline() / get_correction_logger()
+│       │   ├── exceptions.py       ← PipelineError / ExpenseLogError / CorrectionError / InconsistentExtraction
 │       │   └── __init__.py         ← public API
 │       └── telegram_app/         # Telegram bot front-end (Step 7)
 │           ├── auth.py             ← parse_allowed_users + Authorizer (no SDK)
-│           ├── bot.py              ← MessageProcessor + async handler factories
+│           ├── bot.py              ← MessageProcessor + CorrectionProcessor + async handler factories
 │           ├── factory.py          ← build_application() / run_polling()
 │           └── __init__.py
 └── tests/
@@ -581,10 +632,12 @@ expense-tracker-bot/
     ├── test_sheets_currency.py         # cache, identity, API path, stale fallback
     ├── test_sheets_factory.py          # config validation + fake/real selection
     ├── test_pipeline_logger.py         # ExpenseLogger: FX, auto-vivify, alias resolve, errors
+    ├── test_pipeline_correction.py     # CorrectionLogger: undo, edit-amount, edit-category, recompute resilience
     ├── test_pipeline_reply.py          # format_reply: every intent + log/error branches
     ├── test_pipeline_chat.py           # ChatPipeline end-to-end (FakeLLM + FakeSheetsBackend)
     ├── test_telegram_auth.py           # allow-list parser + Authorizer
     ├── test_telegram_processor.py      # MessageProcessor (auth + pipeline orchestration)
+    ├── test_telegram_correction.py     # CorrectionProcessor: /last, /undo, /edit + arg parser
     └── test_telegram_handlers.py       # async PTB-handler glue + Application factory
 ```
 
@@ -598,8 +651,9 @@ expense-tracker-bot/
 5. **Chat → row writer** — connect Orchestrator output to `append_transactions`, with `ensure_month_tab` autovivification, FX conversion, and graceful failure replies. New `expense --chat` CLI command. **(done)**
 5.1. **Schema + visual polish** — Transactions reordered (Date | Day | Month | Year | Category | … | Timestamp). ``Month`` is now a human name ("April"), ``Year`` is a 4-digit int. ``Timestamp`` (bot-write time) moved to the far right so backdated entries read clearly. Daily grid + YTD grid now use a "quiet baseline / loud non-zero" emphasis. New ``expense --reinit-transactions`` for safe schema migrations. **(done)**
 6. Sheets reader + aggregator — answer retrieval queries by SUMIFS-equivalent reads.
-7. **Telegram bot** — wraps the chat pipeline in a Telegram front-end. Long-polling (no public URL needed), explicit per-user-ID allow-list, `/start` / `/help` / `/whoami` commands, and `expense --telegram` CLI to run it. **(done — this commit)**
-8. Polish — `--undo`, multi-turn clarification, weekly summaries.
+7. **Telegram bot** — wraps the chat pipeline in a Telegram front-end. Long-polling (no public URL needed), explicit per-user-ID allow-list, `/start` / `/help` / `/whoami` commands, and `expense --telegram` CLI to run it. **(done)**
+7.1. **Self-healing + corrections** — every log "nudges" the affected monthly tab so the daily grid + summary stay in sync (works around a Google Sheets stale-cache quirk). New `/last`, `/undo`, `/edit amount X`, `/edit category Y` Telegram commands and matching CLI flags (`--undo`, `--edit-amount`, `--edit-category`) target the bottom-most Transactions row. Amount edits re-run FX so `Amount (USD)` stays consistent; category edits canonicalize through the registry. Refined `categories.yaml` to keep personal-care products in `Shopping` (vs salon services). **(done — this commit)**
+8. Polish — multi-turn clarification, weekly summaries, retrieval over multi-row /undo history.
 
 ## Running it
 

@@ -22,23 +22,34 @@ Public errors:
 from __future__ import annotations
 
 from .chat import ChatPipeline, ChatTurn
+from .correction import (
+    CorrectionError,
+    CorrectionLogger,
+    EditResult,
+    UndoResult,
+)
 from .exceptions import (
     ExpenseLogError,
     InconsistentExtractionError,
     PipelineError,
 )
-from .factory import get_chat_pipeline
+from .factory import get_chat_pipeline, get_correction_logger
 from .logger import ExpenseLogger, LogResult
 from .reply import format_reply
 
 __all__ = [
     "ChatPipeline",
     "ChatTurn",
+    "CorrectionError",
+    "CorrectionLogger",
+    "EditResult",
     "ExpenseLogError",
     "ExpenseLogger",
     "InconsistentExtractionError",
     "LogResult",
     "PipelineError",
+    "UndoResult",
     "format_reply",
     "get_chat_pipeline",
+    "get_correction_logger",
 ]

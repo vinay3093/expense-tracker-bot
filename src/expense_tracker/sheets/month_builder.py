@@ -30,6 +30,7 @@ from __future__ import annotations
 import calendar
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from .backend import (
     CellFormat,
@@ -642,6 +643,117 @@ def _style_to_format(
         background_color=bg,
         number_format=number_format,
     )
+
+
+# ─── Stale-cache nudge ──────────────────────────────────────────────────
+
+def force_month_recompute(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+    *,
+    year: int,
+    month: int,
+    categories: list[str],
+) -> str | None:
+    """Force Google Sheets to re-evaluate this month's headline formulas.
+
+    Why this exists
+    ---------------
+    When the bot writes a row to the ``Transactions`` tab via the API,
+    monthly tabs that reference that range (SUMIFS, COUNTIFS, MAXIFS,
+    QUERY) sometimes hold a *stale* value — the formula's cached result
+    from the last UI render. Refreshing the browser fixes it, which
+    points to a server-side evaluation cache that doesn't always
+    invalidate on API writes to the source range.
+
+    The fix
+    -------
+    We re-write the headline formula cells with their canonical formula
+    strings — Sheets treats this as a new write, evaluates fresh against
+    the latest ``Transactions`` data, and propagates the new value to
+    every cell in the dependency tree (the daily SUMIFS grid is reached
+    transitively via the column-totals → grand-total chain).
+
+    Cost
+    ----
+    Two API writes (summary block + total row). Cheap enough to run
+    after every chat-driven append / undo / edit; it's the trade-off we
+    take to keep the user's view always-fresh without asking them to
+    refresh.
+
+    Returns
+    -------
+    Tab name on success, or ``None`` when the tab does not yet exist
+    (e.g. recompute requested for a future month). Errors from the
+    underlying backend propagate as :class:`SheetsError`.
+    """
+    if not categories:
+        return None
+    if not (1 <= month <= 12):
+        raise ValueError(f"month must be 1..12, got {month}")
+
+    sheet_name = sheet_format.monthly_sheet_name(
+        month_name=calendar.month_name[month],
+        month_short=calendar.month_abbr[month],
+        month_num=month,
+        year=year,
+    )
+    if not backend.has_worksheet(sheet_name):
+        return None
+
+    ws = backend.get_worksheet(sheet_name)
+    layout = MonthLayout.for_month(
+        year=year,
+        month=month,
+        n_categories=len(categories),
+        breakdown_top_n=sheet_format.monthly.breakdown_top_n_per_category,
+    )
+
+    n_cats = len(categories)
+    total_col = col_index_to_letter(CATEGORY_FIRST_INDEX + n_cats)
+    grand_total_cell = f"{total_col}{layout.total_row}"
+
+    # Re-assert the summary block (rows 4..7, column B). Each cell is
+    # a SUMIFS / COUNTIFS / MAXIFS over Transactions; re-writing forces
+    # a fresh evaluation.
+    ws.update_values(
+        f"B{ROW_SUMMARY_FIRST}:B{ROW_SUMMARY_LAST}",
+        [
+            [summary_total_formula(total_row_grand_total_cell=grand_total_cell)],
+            [summary_transactions_formula(year=year, month=month)],
+            [summary_avg_per_day_formula(
+                total_cell=f"B{ROW_SUMMARY_FIRST}", year=year, month=month,
+            )],
+            [summary_largest_single_formula(year=year, month=month)],
+        ],
+    )
+
+    # Re-assert the daily total row (column-wise SUMs across the daily
+    # grid + grand total). Same trick: writing forces evaluation, which
+    # cascades down through the SUMIFS day cells.
+    total_row_cells: list[Any] = ["Total", ""]
+    for col_offset in range(n_cats):
+        col_letter = col_index_to_letter(CATEGORY_FIRST_INDEX + col_offset)
+        total_row_cells.append(
+            column_total_formula(
+                col_letter=col_letter,
+                first_data_row=layout.daily_first_row,
+                last_data_row=layout.daily_last_row,
+            )
+        )
+    total_row_cells.append(
+        column_total_formula(
+            col_letter=total_col,
+            first_data_row=layout.daily_first_row,
+            last_data_row=layout.daily_last_row,
+        )
+    )
+    ws.update_values(
+        f"A{layout.total_row}:{total_col}{layout.total_row}",
+        [total_row_cells],
+    )
+
+    return sheet_name
 
 
 def _style_to_band_format(style: CellStyle) -> CellFormat:

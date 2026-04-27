@@ -58,6 +58,7 @@ from ..sheets.backend import SheetsBackend, WorksheetHandle
 from ..sheets.currency import ConversionResult, CurrencyConverter, CurrencyError
 from ..sheets.exceptions import SheetsError
 from ..sheets.format import SheetFormat
+from ..sheets.month_builder import force_month_recompute
 from ..sheets.transactions import (
     TransactionRow,
     append_transactions,
@@ -194,6 +195,23 @@ class ExpenseLogger:
                 f"failed to append to {self._format.transactions.sheet_name!r}: {exc}",
                 cause=exc,
             ) from exc
+
+        # Nudge the monthly tab to recompute against the just-appended
+        # row. Sheets sometimes serves a stale formula cache after API
+        # writes — re-asserting headline formulas forces a fresh eval.
+        # Failure here is a UX concern, never a data correctness one,
+        # so we log + swallow and let the chat reply still confirm the
+        # log succeeded.
+        try:
+            force_month_recompute(
+                self._backend,
+                self._format,
+                year=entry.date.year,
+                month=entry.date.month,
+                categories=self._registry.canonical_names(),
+            )
+        except SheetsError as exc:
+            _log.warning("Recompute nudge failed for %s: %s", entry.date, exc)
 
         return LogResult(
             transactions_tab=self._format.transactions.sheet_name,
