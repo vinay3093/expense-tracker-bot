@@ -64,7 +64,44 @@ Rules:
 - Output VALID JSON only. No prose, no markdown fences.
 - Numbers must be JSON numbers, not strings.
 - If multiple expenses are mentioned in one message, extract the FIRST one
-  (a future version will handle multi-extraction)."""
+  (a future version will handle multi-extraction).
+
+CATEGORY OVERRIDE RULE — read this carefully:
+- If the user EXPLICITLY names one of the canonical categories above
+  in their message, use THAT category verbatim — even if the rest of
+  the message would normally suggest a different one.  The user knows
+  their own taxonomy better than you do.
+- Phrases that count as an explicit category directive include
+  (case-insensitive, punctuation-flexible):
+    "add to <Category>", "add this to <Category>",
+    "put under <Category>", "put it under <Category>",
+    "log as <Category>", "log it as <Category>",
+    "categorise as <Category>", "categorize as <Category>",
+    "<Category> column", "in the <Category> column",
+    "in <Category>", "under <Category>",
+    "this is <Category>", "it's <Category>", "its <Category>",
+    "as <Category>", "for <Category>",
+  where <Category> is one of the canonical names listed above
+  (alias matches also count, e.g. "add to shopping" matches the
+  Shopping category).
+- Only override the category — every other field (amount, vendor,
+  note, date) is still extracted from the rest of the message.
+- The override applies regardless of word order: "log as shopping,
+  i spent 40 on body massage" and "i spent 40 on body massage,
+  log as shopping" both yield Shopping.
+- When the user names a category that doesn't exist in the list
+  above, IGNORE the directive and pick the best match from content.
+  Do NOT invent new categories.
+
+Examples of the override in action:
+- "i spent 40$ for body massage, add this to shopping column for today"
+  → category = Shopping (NOT Saloon — user said "shopping column")
+- "got shampoo for my wife which costed me 100$, put under Shopping"
+  → category = Shopping (matches the alias rule AND the directive)
+- "100$ at total wine but log it as Food"
+  → category = Food (NOT Party — user explicitly overrode)
+- "40 bucks tip for my barber" (no override)
+  → category = Saloon (no directive, content rules apply)"""
 
 
 def build_expense_system_prompt(

@@ -947,6 +947,24 @@ def _cmd_telegram(*, fake: bool) -> int:
     knows which spreadsheet, allow-list, and provider this run is using
     — surprisingly easy to forget after a few terminals.
     """
+    # Wire stdlib logging at INFO so python-telegram-bot's internals
+    # (network errors, conflict warnings, polling startup) and our own
+    # _log.info(...) calls actually reach the container's stdout.
+    # Without this, a silent crash inside Application.run_polling()
+    # leaves the container alive but un-pollable — exactly what we hit
+    # on Hugging Face Spaces with no diagnostic to chase.  WARNING is
+    # the stdlib default which would still hide most useful events.
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # python-telegram-bot is chatty at DEBUG; INFO is the sweet spot:
+    # we get conflict + connect + shutdown but not every HTTP poll.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
+
     cfg = get_settings()
     print(f"Provider       : {cfg.LLM_PROVIDER}")
     print(f"Timezone       : {cfg.TIMEZONE}")
@@ -987,6 +1005,31 @@ def _cmd_telegram(*, fake: bool) -> int:
     except TelegramConfigError as exc:
         print(f"\n[telegram config error] {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("\nStopping long-polling on user interrupt.")
+        return 0
+    except Exception:
+        # If we land here, the polling loop crashed with something we
+        # weren't expecting (asyncio death, network handshake failure,
+        # auth rejection, etc.).  On hosted platforms the container
+        # would just exit and HF would silently restart it forever —
+        # the operator would see a healthy /health endpoint and a dead
+        # bot.  Print the full traceback so logs make the cause loud.
+        import traceback
+        print(
+            "\n[telegram fatal] long-polling crashed unexpectedly:\n",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
+        return 1
+    # run_polling() blocks until SIGTERM; reaching here means the
+    # event loop returned cleanly, which on a hosted bot is suspicious
+    # — we expect to be killed by the platform, not to exit normally.
+    print(
+        "[telegram] run_polling returned without an exception. "
+        "If this is unexpected, check the previous lines for a hint.",
+        file=sys.stderr,
+    )
     return 0
 
 
