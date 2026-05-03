@@ -61,12 +61,26 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     # Default health port — HF sets PORT=7860 itself which we pick up
     # below.  Keeping a default lets `docker run` work without flags.
-    TELEGRAM_HEALTH_PORT=7860
+    TELEGRAM_HEALTH_PORT=7860 \
+    # Pin LOG_DIR to an absolute path the non-root user owns.  The
+    # default ("./logs") would resolve relative to the CWD, which is
+    # /app — and /app is root-owned, so the `bot` user can't mkdir
+    # there.  Hosted platforms (HF Spaces, Render, Koyeb) all run our
+    # user as non-root, so the relative default is a deploy-time
+    # foot-gun.  Same dir doubles as the FX-rate cache home.
+    LOG_DIR=/app/logs
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=bot:bot src/ ./src/
 COPY --chown=bot:bot pyproject.toml README.md ./
+
+# Pre-create the writable dirs the bot expects so the very first
+# request doesn't race against mkdir + chown.  /app/logs holds JSONL
+# traces and the FX cache; /app/data is reserved for future use
+# (currency snapshots, local SQLite if a user opts in).
+RUN mkdir -p /app/logs /app/data \
+ && chown -R bot:bot /app/logs /app/data
 
 USER bot
 
