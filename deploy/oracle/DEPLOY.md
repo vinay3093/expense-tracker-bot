@@ -19,7 +19,7 @@
                  │                                              │
    Telegram  ◀──▶│   systemd: expense-bot.service               │
                  │      └─ /home/ubuntu/expense-tracker-bot/    │
-                 │            ├─ .venv/   (python 3.10 + deps)  │
+                 │            ├─ .venv/   (python 3.12 + deps)  │
                  │            ├─ .env     (chmod 600)           │
                  │            ├─ secrets/ (service-account.json)│
                  │            └─ logs/    (jsonl traces)        │
@@ -63,7 +63,7 @@ In the Oracle Cloud console:
 
 1. **Menu (☰) → Compute → Instances → Create Instance**.
 2. Name it something memorable: `expense-bot`.
-3. **Image:** click *Change image* → **Ubuntu** → **22.04 (aarch64)**.
+3. **Image:** click *Change image* → **Canonical Ubuntu** → **24.04** (pick the **aarch64** variant if you'll use the ARM/Ampere shape in the next step; pick the plain `24.04` row if you'll fall back to AMD x86). Ubuntu 22.04 also works if 24.04 isn't available in your region — only difference is bundled Python (3.10 vs 3.12), both are fine.
 4. **Shape:** click *Change shape* → **Ampere** (this is the big ARM
    shape that's part of Always-Free).  Default 1 OCPU + 6 GB RAM is
    plenty for the bot.  You can go up to 4 OCPU / 24 GB still free.

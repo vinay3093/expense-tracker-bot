@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# setup.sh — first-time bootstrap on a fresh Oracle Cloud Ubuntu 22.04 VM
+# setup.sh — first-time bootstrap on a fresh Oracle Cloud Ubuntu VM
+# Tested on Ubuntu 22.04 LTS (ships python 3.10) and 24.04 LTS (ships python 3.12).
 # =============================================================================
 # Run this AS the `ubuntu` user (the default sudo-capable user on Oracle's
 # Ubuntu image).  Idempotent — re-runs are safe.
@@ -11,7 +12,7 @@
 #   bash deploy/oracle/setup.sh
 #
 # What it does:
-#   1. Installs OS packages: python3.10, venv, git, build tools.
+#   1. Installs OS packages: python3 (whatever the OS ships), venv, git, build tools.
 #   2. Creates ./.venv/ and installs the project + telegram extras.
 #   3. Creates ./logs and ./secrets with safe permissions.
 #   4. Symlinks deploy/oracle/expense-bot.service into /etc/systemd/system/.
