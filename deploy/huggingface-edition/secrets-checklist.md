@@ -18,10 +18,48 @@ build logs), not **Variable** (visible).
 **Do NOT set:**
 
 * `TELEGRAM_HEALTH_PORT` — the Dockerfile sets it from `$PORT` already.
-* `STORAGE_BACKEND` — defaults to `sheets` which is what you want here.
-* `DATABASE_URL` — Postgres edition only.
 * `GOOGLE_SERVICE_ACCOUNT_JSON` (the file-path variant) — would be
   ignored anyway because `_CONTENT` wins, but cleaner to leave it out.
 
 After saving secrets, click **"Restart this Space"** at the top of
 Settings.  The container picks up the new env vars on next boot.
+
+---
+
+## Optional: enable mirror mode (Sheets + Postgres dual-write)
+
+If you've also set up Supabase (or any reachable Postgres) and want
+every expense to land in BOTH Sheets and Postgres for future
+analytics / NocoDB UI:
+
+| # | Name | Required for mirror? | Example value | Notes |
+|---|------|---------------------|---------------|-------|
+| 9 | `STORAGE_BACKEND` | ✅ | `mirror` | Replaces the default `sheets` |
+| 10 | `MIRROR_PRIMARY` | optional | `sheets` | Default. Source-of-truth for reads. |
+| 11 | `MIRROR_SECONDARY` | optional | `nocodb` | Default. Best-effort mirror. |
+| 12 | `DATABASE_URL` | ✅ | `postgresql+psycopg://user:pass@db.example.supabase.co:6543/postgres` | Use Supabase's **Session pooler** URL for IPv4 compat |
+
+**Behaviour:**
+
+* Every chat write goes to **Sheets first** (must succeed → user sees
+  the confirmation reply).
+* Then to **Postgres** as a best-effort mirror (failures logged at
+  WARNING but never break the user's chat).
+* Reads + retrieval queries + summaries always come from Sheets so
+  the phone view is unchanged.
+* If Postgres ever falls behind during a Supabase outage, run
+  `expense --reconcile` from your laptop to back-fill missing rows.
+  Idempotent.
+
+**Before turning mirror mode on**, make sure:
+
+1. Your Supabase database has the schema initialised — run
+   `expense --init-postgres` once from your laptop with `DATABASE_URL`
+   in your local `.env`.
+2. Your `DATABASE_URL` points at the **Session pooler** on port 6543
+   (not direct connection on 5432) — the pooler URL is the only one
+   Hugging Face Spaces can reach over IPv4.
+
+**Switching modes is reversible.**  Set `STORAGE_BACKEND=sheets` and
+restart to drop Postgres mirroring; the Sheets write path is
+unchanged so no data is lost.

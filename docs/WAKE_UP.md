@@ -286,6 +286,9 @@ git push origin feat/nocodb-edition  # if you want to keep the branch around
 | `gh workflow run keep-hf-alive.yml` | Manually wake the HF Space |
 | `curl https://<space>.hf.space/health` | Liveness check (returns `ok`) |
 | `docker build -t expense-bot . && docker run -p 7860:7860 --env-file .env expense-bot` | Local parity test of the HF image |
+| `STORAGE_BACKEND=mirror expense --chat "..."` | Test mirror dual-write for one message |
+| `expense --reconcile-dry-run` | Preview drift between Sheets + Postgres (mirror mode) |
+| `expense --reconcile` | Back-fill rows missing from secondary (mirror mode) |
 
 ---
 

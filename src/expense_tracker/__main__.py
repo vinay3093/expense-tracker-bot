@@ -273,6 +273,37 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ─── Mirror edition (Step 11b) ─────────────────────────────────────
+    g_mirror = p.add_argument_group(
+        "Mirror edition",
+        description=(
+            "Operate on the dual-write mirror backend (Sheets + Postgres "
+            "in parallel).  Active when STORAGE_BACKEND=mirror in your "
+            ".env; both child backends must be configured."
+        ),
+    )
+    g_mirror.add_argument(
+        "--reconcile",
+        action="store_true",
+        help=(
+            "Detect + repair drift between MIRROR_PRIMARY and "
+            "MIRROR_SECONDARY.  Reads every row from each, computes a "
+            "content fingerprint, and back-fills any rows present in "
+            "the primary but missing from the secondary.  Rows in "
+            "secondary but not primary are reported but never deleted "
+            "(defensive: they may be a legit edit history).  Idempotent."
+        ),
+    )
+    g_mirror.add_argument(
+        "--reconcile-dry-run",
+        action="store_true",
+        help=(
+            "Run --reconcile in read-only mode: print the drift report "
+            "but DO NOT back-fill anything.  Use to preview what "
+            "--reconcile would do."
+        ),
+    )
+
     # ─── Telegram front-end ────────────────────────────────────────────
     g_tg = p.add_argument_group(
         "Telegram",
@@ -1129,6 +1160,81 @@ def _cmd_migrate_sheets_to_postgres(*, force: bool) -> int:
     return 0
 
 
+def _cmd_reconcile(*, dry_run: bool) -> int:
+    """Detect + repair drift between MIRROR_PRIMARY and MIRROR_SECONDARY.
+
+    Builds the configured mirror's child backends directly (so we get
+    crisp diagnostics about which side failed) rather than going
+    through ``MirrorLedgerBackend`` — the wrapper deliberately swallows
+    failures, which is the wrong behaviour for an interactive command.
+    """
+    cfg = get_settings()
+
+    if (cfg.STORAGE_BACKEND or "").strip().lower() != "mirror":
+        print(
+            f"\n[refusing] STORAGE_BACKEND={cfg.STORAGE_BACKEND!r} — "
+            "--reconcile only makes sense when the bot is in mirror "
+            "mode.  Set STORAGE_BACKEND=mirror in .env first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from .ledger.base import LedgerError
+        from .ledger.factory import _build_single_backend
+        from .ledger.mirror.reconcile import reconcile
+    except ImportError as exc:
+        print(f"\n[deps missing] {exc}", file=sys.stderr)
+        return 2
+
+    primary_name = (cfg.MIRROR_PRIMARY or "sheets").strip().lower()
+    secondary_name = (cfg.MIRROR_SECONDARY or "nocodb").strip().lower()
+
+    print(f"Primary    : {primary_name}")
+    print(f"Secondary  : {secondary_name}")
+    print(f"Mode       : {'dry-run (no writes)' if dry_run else 'apply'}\n")
+
+    try:
+        primary = _build_single_backend(primary_name, cfg, fake=False)
+        secondary = _build_single_backend(secondary_name, cfg, fake=False)
+    except (LedgerError, ValueError) as exc:
+        print(f"\n[backend init failed] {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        report = reconcile(primary, secondary, dry_run=dry_run)
+    except LedgerError as exc:
+        print(f"\n[read failed] {exc}", file=sys.stderr)
+        return 3
+
+    print("─── reconcile report ─────────────────────────")
+    print(f"Primary rows         : {report.primary_total}")
+    print(f"Secondary rows       : {report.secondary_total}")
+    print(f"Missing in secondary : {report.missing_in_secondary}")
+    print(f"Extras in secondary  : {report.extras_in_secondary}")
+    print(f"Back-filled this run : {report.backfilled}")
+    print(f"In sync now          : {'yes' if report.in_sync else 'no'}")
+
+    if report.backfill_errors:
+        print(f"\nBack-fill errors ({len(report.backfill_errors)}):")
+        for msg in report.backfill_errors[:10]:
+            print(f"  - {msg}")
+        if len(report.backfill_errors) > 10:
+            print(f"  ... and {len(report.backfill_errors) - 10} more")
+        return 4
+
+    if report.extras_in_secondary > 0:
+        print(
+            f"\nNote: {report.extras_in_secondary} row(s) exist in "
+            f"{secondary_name} but not in {primary_name}.  "
+            "Reconcile NEVER auto-deletes — investigate manually if "
+            "you want them gone (likely safe to leave: they may be "
+            "edits or audit-log artefacts)."
+        )
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     args = _build_parser().parse_args(argv)
 
@@ -1189,6 +1295,10 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     if args.migrate_sheets_to_postgres:
         sys.exit(_cmd_migrate_sheets_to_postgres(force=args.migrate_force))
 
+    # Mirror edition.
+    if args.reconcile or args.reconcile_dry_run:
+        sys.exit(_cmd_reconcile(dry_run=args.reconcile_dry_run))
+
     # Telegram bot.
     if args.telegram:
         sys.exit(_cmd_telegram(fake=args.fake))
@@ -1204,6 +1314,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     print("Fix     : --undo | --edit-amount 50 | --edit-category Groceries")
     print("Telegram: --telegram        (run the bot)")
     print("Postgres: --init-postgres | --postgres-health | --migrate-sheets-to-postgres")
+    print("Mirror  : --reconcile | --reconcile-dry-run")
     print("Add --fake to any Sheets / chat / telegram command to run offline.")
     sys.exit(0)
 

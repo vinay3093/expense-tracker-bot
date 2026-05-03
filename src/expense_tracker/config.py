@@ -25,7 +25,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ProviderName = Literal["groq", "ollama", "openai", "anthropic", "fake"]
 ChatStoreBackend = Literal["jsonl"]
-StorageBackend = Literal["sheets", "nocodb", "postgres"]
+StorageBackend = Literal["sheets", "nocodb", "postgres", "mirror"]
+MirrorChild = Literal["sheets", "nocodb", "postgres"]
 
 
 class Settings(BaseSettings):
@@ -189,10 +190,32 @@ class Settings(BaseSettings):
             "Which ledger backend the bot writes / reads from:\n"
             "* 'sheets' — Google Sheets edition (Step 4-9).  Default.\n"
             "* 'nocodb' / 'postgres' — Postgres + NocoDB edition (Step 10b).\n"
-            "Setting this to 'nocodb' requires DATABASE_URL pointing at a\n"
-            "reachable Postgres (Supabase, local docker, RDS, ...).  Both\n"
-            "editions live in the same codebase; flipping this var is the\n"
-            "only change needed at runtime."
+            "* 'mirror' — dual-write to MIRROR_PRIMARY (default 'sheets')\n"
+            "  AND MIRROR_SECONDARY (default 'nocodb').  Reads come from\n"
+            "  the primary; secondary failures are logged but never raised\n"
+            "  so a Supabase blip can't break the user's chat reply.\n"
+            "Setting this to 'nocodb' or 'mirror' requires DATABASE_URL\n"
+            "pointing at a reachable Postgres.  Both editions live in the\n"
+            "same codebase; flipping this var is the only change needed at\n"
+            "runtime."
+        ),
+    )
+    MIRROR_PRIMARY: MirrorChild = Field(
+        default="sheets",
+        description=(
+            "When STORAGE_BACKEND=mirror, which child backend serves "
+            "READS and is the source-of-truth.  Defaults to 'sheets' so "
+            "the user's phone-facing spreadsheet remains authoritative."
+        ),
+    )
+    MIRROR_SECONDARY: MirrorChild = Field(
+        default="nocodb",
+        description=(
+            "When STORAGE_BACKEND=mirror, which child backend receives "
+            "best-effort writes.  Defaults to 'nocodb' (Postgres) so "
+            "every expense accumulates in a queryable database for "
+            "future analytics / NocoDB UI without affecting the chat "
+            "experience.  MUST differ from MIRROR_PRIMARY."
         ),
     )
     DATABASE_URL: SecretStr | None = Field(

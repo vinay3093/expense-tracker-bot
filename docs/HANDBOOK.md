@@ -1489,6 +1489,167 @@ no real ports needed beyond the OS-assigned ephemeral test port.
 
 ---
 
+## 14d. Mirror edition — Sheets + Postgres dual-write (Step 11b)
+
+The third `LedgerBackend` implementation, sitting beside the Sheets
+edition (§4-9) and the Postgres edition (§14b).  Mirror is a
+**wrapper**, not a new storage engine: it composes any two existing
+backends and forwards every write to both.
+
+### Why mirror exists
+
+Once you've deployed the bot to Hugging Face Spaces in Sheets-only
+mode, two follow-up wishes typically appear:
+
+1. *"I want my expenses in a real database too — for SQL queries,
+   NocoDB dashboards, future analytics."*
+2. *"But I don't want to give up the Google Sheets UI on my phone."*
+
+Mirror solves both at once.  Every chat write lands in **both**
+stores; reads stay on Sheets so the phone experience is unchanged.
+
+### Architecture
+
+```
+                Telegram message ("today I spent $5 on coffee")
+                                     │
+                                     ▼
+                   ┌────────────────────────────────────┐
+                   │  ChatPipeline                      │
+                   │  → ExpenseLogger                   │
+                   │  → ledger.append([row])            │
+                   └────────────────┬───────────────────┘
+                                    ▼
+                   ┌────────────────────────────────────┐
+                   │  MirrorLedgerBackend               │
+                   └─────────┬──────────────────┬───────┘
+                             │ MUST succeed     │ best-effort
+                             ▼                  ▼
+                   ┌──────────────────┐  ┌───────────────────┐
+                   │  PRIMARY         │  │  SECONDARY        │
+                   │  (sheets)        │  │  (nocodb)         │
+                   │                  │  │                   │
+                   │  → user sees     │  │  → if it fails,   │
+                   │    "logged" reply│  │    log warning    │
+                   │                  │  │    (chat reply    │
+                   │  → reads come    │  │    unaffected)    │
+                   │    from here     │  │                   │
+                   └──────────────────┘  └───────────────────┘
+                             ▲                  │
+                             │                  │
+                   `expense --reconcile`◄───────┘
+                   back-fills missing rows on demand
+```
+
+### Failure semantics (the important table)
+
+| Operation | Primary fails | Secondary fails |
+|-----------|---------------|-----------------|
+| `init_storage` | RAISES — bot won't start | logged WARNING, bot starts |
+| `ensure_period` | RAISES | logged WARNING |
+| `append` | RAISES — user sees error | logged WARNING — user sees success |
+| `recompute_period` | RAISES | logged WARNING |
+| `read_all` | RAISES | not called |
+| `get_last` | RAISES | not called |
+| `delete_last` | RAISES | logged WARNING |
+| `update_last` | RAISES | logged WARNING |
+| `health_check` | reflected in result | logged + ignored |
+
+Three principles drove this design:
+
+1. **The user's chat experience can NEVER be worse than the Sheets-only
+   edition.**  A Supabase blip mid-message can't surface as a failed
+   expense.
+2. **Reads are single-sourced.**  Retrieval / summary / `/last`
+   semantics are deterministic — same row indices, same multiset, same
+   ordering — regardless of secondary state.
+3. **Drift is fixable, not preventable.**  When the secondary falls
+   behind, `expense --reconcile` brings it back.  No async queues, no
+   message brokers, no eventual-consistency contract leaking into the
+   chat layer.
+
+### Configuration
+
+```ini
+# .env
+STORAGE_BACKEND=mirror
+MIRROR_PRIMARY=sheets       # default — source-of-truth for reads
+MIRROR_SECONDARY=nocodb     # default — best-effort write target
+
+# Plus the secrets each child backend needs:
+GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT=...   # or the path variant
+EXPENSE_SHEET_ID=...
+DATABASE_URL=postgresql+psycopg://user:pass@host:6543/postgres
+```
+
+`MIRROR_PRIMARY` and `MIRROR_SECONDARY` MUST differ — the factory
+raises a `ValueError` otherwise.  Both children must be one of the
+single-edition names: `sheets`, `nocodb`, or `postgres`.
+
+### Reconciliation: `expense --reconcile`
+
+When a Supabase outage causes the secondary to miss writes, drift
+accumulates.  Reconcile detects + fixes it:
+
+```bash
+$ expense --reconcile
+Primary    : sheets
+Secondary  : nocodb
+Mode       : apply
+
+reconcile: back-filling 3 row(s) into nocodb ...
+─── reconcile report ─────────────────────────
+Primary rows         : 47
+Secondary rows       : 47
+Missing in secondary : 3
+Extras in secondary  : 0
+Back-filled this run : 3
+In sync now          : yes
+```
+
+Add `--reconcile-dry-run` to see what would happen without writing.
+
+**Algorithm:** read every row from each backend, compute a
+content fingerprint (`date + category + amount + currency + vendor +
+note`), find the multiset difference, append missing rows to the
+secondary one at a time so a single bad row doesn't block the rest.
+
+**What reconcile WON'T do:** delete rows that exist in secondary
+but not primary.  Those are reported as `extras_in_secondary` and
+left in place — they may be a legitimate audit trail (Postgres
+edition has soft-delete + audit log; Sheets does not), and a wrong
+auto-delete would lose data.
+
+### Tests
+
+Two new test files cover the mirror moving parts:
+
+* `tests/test_ledger_mirror.py` — 18 tests: dual-write happy path,
+  reads single-sourced from primary, primary failure propagates,
+  secondary failure swallowed (LedgerError + arbitrary Exception),
+  empty-rows shortcut, identity properties, last-row mirror semantics.
+* `tests/test_ledger_mirror_reconcile.py` — 10 tests: in-sync
+  detection, back-fill, chronological ordering preserved, duplicate
+  rows handled correctly, extras reported but not deleted, dry-run
+  is a no-op, partial back-fill failures collected.
+
+All 28 are hermetic — `FakeSheetsBackend` for both children means
+zero network calls, plus a hand-rolled `_BoomLedger` stub for
+failure-mode tests.
+
+### When NOT to use mirror mode
+
+* **Hugging Face Spaces deploy without Supabase set up yet.**  Mirror
+  needs both backends configured.  Stick with `STORAGE_BACKEND=sheets`
+  until you've added `DATABASE_URL` to your secrets.
+* **You actively don't want Postgres.**  If Sheets is enough for your
+  use case forever, the mirror's added complexity buys you nothing.
+* **High-throughput workloads.**  Every write becomes 2 round-trips.
+  At personal scale (~50 writes/day) this is invisible, but a SaaS-style
+  multi-tenant load wants async / outbox patterns instead.
+
+---
+
 ## 15. Maintenance — backup, year rollover, schema migration
 
 ### Backups
@@ -1555,6 +1716,7 @@ to append a new column at the end and the existing rows stay valid
 | 10b | Postgres + NocoDB edition: SQLAlchemy 2.0 typed models with soft-delete + audit log; `PostgresLedgerBackend` adapter; Alembic migrations; `expense --init-postgres / --postgres-health / --migrate-sheets-to-postgres` CLI commands | done |
 | 10c | `deploy/nocodb-edition/` bundle (docker-compose for Postgres+NocoDB, `setup.sh` with random secrets + alembic, `expense-bot.service` with Postgres ready-wait, runbook with NocoDB UI walkthrough) | done |
 | 11a | Hugging Face Spaces edition: `Dockerfile` (multi-stage, non-root, tini PID-1, `$PORT` honoured), `GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT` env-var credentials, `HealthServer` (GET `/`, `/health`), `deploy/huggingface-edition/` bundle, GitHub Actions cron keep-alive (`.github/workflows/keep-hf-alive.yml`) | done |
+| 11b | Mirror edition (Sheets + Postgres dual-write): `MirrorLedgerBackend`, `STORAGE_BACKEND=mirror` + `MIRROR_PRIMARY` + `MIRROR_SECONDARY` settings, `expense --reconcile` + `--reconcile-dry-run` CLI for drift repair | done |
 
 ### What "sellable" would require (out of current scope)
 
