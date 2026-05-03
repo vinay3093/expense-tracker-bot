@@ -215,7 +215,24 @@ def run_polling(
         sorted(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
         or "<none — bot will refuse everyone>",
     )
-    app.run_polling(allowed_updates=["message"])
+    # `stop_signals=None` is essential under PID 1 supervisors (tini,
+    # docker, k8s) where Application.run_polling()'s default attempt
+    # to register SIGINT/SIGTERM/SIGABRT handlers either fails silently
+    # or hangs the asyncio loop *before* polling starts — exactly the
+    # "alive container, queued messages, no Application started log"
+    # symptom we hit on Hugging Face Spaces.  The platform reaps the
+    # container on its own, so we don't need PTB's signal handling.
+    #
+    # `drop_pending_updates=True` discards messages that piled up in
+    # Telegram's queue while the bot was unreachable.  Useful on every
+    # cold-start: replaying old commands the user assumed had failed
+    # would be confusing and could double-log expenses.
+    _log.info("Calling Application.run_polling() — past this point PTB owns the loop.")
+    app.run_polling(
+        allowed_updates=["message"],
+        stop_signals=None,
+        drop_pending_updates=True,
+    )
 
 
 __all__ = [
