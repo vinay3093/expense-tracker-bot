@@ -42,6 +42,7 @@ from expense_tracker.pipeline.summary import (
     _build_prior_window,
     format_summary,
 )
+from tests.conftest import make_sheets_ledger
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ def _engine_with(rows: list[dict]) -> SummaryEngine:
     if txn_rows:
         append_transactions(backend, fmt, txn_rows)
     retrieval = RetrievalEngine(
-        backend=backend, sheet_format=fmt, registry=registry,
+        ledger=make_sheets_ledger(backend, fmt), registry=registry,
     )
     return SummaryEngine(retrieval_engine=retrieval)
 
@@ -252,7 +253,7 @@ def test_summarize_propagates_skipped_rows_from_focal_window():
     engine = _engine_with([
         {"date": date(2026, 4, 25), "category": "Food", "amount": 10.0},
     ])
-    backend = engine._retriever._backend  # type: ignore[attr-defined]
+    backend = engine._retriever._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     ws.append_rows([[
         "not-a-date", "Mon", "April", 2026, "Food", "", "", 8.0,
@@ -278,9 +279,9 @@ def test_summarize_wraps_engine_failure_as_retrieval_error():
         def get_worksheet(self, name):
             raise SheetsError("boom")
 
+    from expense_tracker.ledger.sheets.adapter import SheetsLedgerBackend
     retrieval = RetrievalEngine(
-        backend=_BoomBackend(),  # type: ignore[arg-type]
-        sheet_format=fmt,
+        ledger=SheetsLedgerBackend(backend=_BoomBackend(), sheet_format=fmt),  # type: ignore[arg-type]
         registry=get_registry(),
     )
     engine = SummaryEngine(retrieval_engine=retrieval)
@@ -350,7 +351,7 @@ def test_format_summary_compact_mentions_skipped_rows():
     engine = _engine_with([
         {"date": date(2026, 4, 25), "category": "Food", "amount": 10.0},
     ])
-    backend = engine._retriever._backend  # type: ignore[attr-defined]
+    backend = engine._retriever._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     ws.append_rows([[
         "not-a-date", "Mon", "April", 2026, "Food", "", "", 8.0,

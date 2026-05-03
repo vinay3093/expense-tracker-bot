@@ -4,12 +4,18 @@ Same philosophy as :mod:`expense_tracker.llm.exceptions`: callers ONLY
 need to catch our own hierarchy, never any underlying gspread /
 google-auth class. Each subclass corresponds to one user-actionable
 failure mode.
+
+``SheetsError`` extends :class:`~expense_tracker.ledger.base.LedgerError`
+so the chat pipeline can catch one base type regardless of which
+storage backend is active (Sheets, Postgres, ...).
 """
 
 from __future__ import annotations
 
+from ..base import LedgerError
 
-class SheetsError(Exception):
+
+class SheetsError(LedgerError):
     """Base class for every error this layer raises."""
 
 

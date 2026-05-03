@@ -28,13 +28,12 @@ from expense_tracker.ledger.sheets.transactions import (
 )
 from expense_tracker.pipeline.retrieval import (
     LedgerInspection,
-    LedgerRow,
     RetrievalAnswer,
     RetrievalEngine,
     RetrievalError,
     SkippedRow,
-    _parse_ledger_row,
 )
+from tests.conftest import make_sheets_ledger
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -69,7 +68,7 @@ def _engine_with_seed(rows: list[dict]) -> RetrievalEngine:
         )
     if txn_rows:
         append_transactions(backend, fmt, txn_rows)
-    return RetrievalEngine(backend=backend, sheet_format=fmt, registry=registry)
+    return RetrievalEngine(ledger=make_sheets_ledger(backend, fmt), registry=registry)
 
 
 def _april_query(
@@ -99,7 +98,7 @@ def test_missing_transactions_tab_returns_empty_answer():
     backend = FakeSheetsBackend(title="Test", spreadsheet_id="sid")
     fmt = get_sheet_format()
     engine = RetrievalEngine(
-        backend=backend, sheet_format=fmt, registry=get_registry(),
+        ledger=make_sheets_ledger(backend, fmt), registry=get_registry(),
     )
 
     answer = engine.answer(_april_query(Intent.QUERY_PERIOD_TOTAL))
@@ -347,7 +346,7 @@ def test_unparseable_date_increments_skipped_count_does_not_crash():
     ])
 
     # Inject a row with a malformed Date cell directly into the fake.
-    backend = engine._backend  # type: ignore[attr-defined]
+    backend = engine._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     ws.append_rows([[
         "not-a-date", "Mon", "April", 2026, "Food", "", "", 8.0,
@@ -386,7 +385,7 @@ def test_inspect_ledger_reports_each_skipped_row_with_index_and_reason():
         {"date": date(2026, 4, 1), "category": "Food", "amount": 10.0},
     ])
 
-    backend = engine._backend  # type: ignore[attr-defined]
+    backend = engine._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     # Row 3: bad date.
     ws.append_rows([[
@@ -423,7 +422,7 @@ def test_inspect_ledger_empty_or_missing_tab_yields_empty_report():
     backend = FakeSheetsBackend(title="Test", spreadsheet_id="sid")
     fmt = get_sheet_format()
     engine = RetrievalEngine(
-        backend=backend, sheet_format=fmt, registry=get_registry(),
+        ledger=make_sheets_ledger(backend, fmt), registry=get_registry(),
     )
 
     report = engine.inspect_ledger()
@@ -447,9 +446,9 @@ def test_inspect_ledger_wraps_sheets_error_like_answer_does():
         def get_worksheet(self, name):
             raise SheetsError("boom")
 
+    from expense_tracker.ledger.sheets.adapter import SheetsLedgerBackend
     engine = RetrievalEngine(
-        backend=_BoomBackend(),  # type: ignore[arg-type]
-        sheet_format=fmt,
+        ledger=SheetsLedgerBackend(backend=_BoomBackend(), sheet_format=fmt),  # type: ignore[arg-type]
         registry=get_registry(),
     )
 
@@ -476,7 +475,7 @@ def test_amount_with_thousand_separator_parses():
     engine = _engine_with_seed([
         {"date": date(2026, 4, 5), "category": "House", "amount": 200.0},
     ])
-    backend = engine._backend  # type: ignore[attr-defined]
+    backend = engine._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     ws.append_rows([[
         "2026-04-12", "Sun", "April", 2026, "House", "rent", "Landlord",
@@ -499,7 +498,7 @@ def test_truly_non_numeric_amount_still_skips():
     engine = _engine_with_seed([
         {"date": date(2026, 4, 1), "category": "Food", "amount": 10.0},
     ])
-    backend = engine._backend  # type: ignore[attr-defined]
+    backend = engine._ledger._backend  # type: ignore[attr-defined]
     ws = backend.get_worksheet("Transactions")
     ws.append_rows([[
         "2026-04-05", "Sun", "April", 2026, "Food", "", "Costco", 12.0,
@@ -527,9 +526,9 @@ def test_sheets_error_during_read_wraps_into_retrieval_error():
         def get_worksheet(self, _name):
             raise SheetsError("boom")
 
+    from expense_tracker.ledger.sheets.adapter import SheetsLedgerBackend
     engine = RetrievalEngine(
-        backend=_BoomBackend(),  # type: ignore[arg-type]
-        sheet_format=fmt,
+        ledger=SheetsLedgerBackend(backend=_BoomBackend(), sheet_format=fmt),  # type: ignore[arg-type]
         registry=get_registry(),
     )
 
@@ -538,60 +537,3 @@ def test_sheets_error_during_read_wraps_into_retrieval_error():
 
     assert "boom" in str(excinfo.value)
     assert isinstance(excinfo.value.cause, SheetsError)
-
-
-# ─── _parse_ledger_row pinned-shape tests ──────────────────────────────
-
-
-def test_parse_ledger_row_returns_none_for_empty_date():
-    """Rows with no Date cell are blank → drop silently (return None)."""
-    out = _parse_ledger_row([], sheet_row=2)
-    assert out is None
-
-
-def test_parse_ledger_row_handles_missing_optional_cells():
-    """Note / Vendor / Trace ID parse to ``None`` when blank, not ``""``.
-    Easier to format in the reply layer ("(Costco: lunch)" vs "(  : )").
-    """
-    row_values = [
-        "2026-04-24", "Fri", "April", 2026, "Food", "", "",
-        12.5, "USD", 12.5, 1.0, "chat", "", "",
-    ]
-    parsed = _parse_ledger_row(row_values, sheet_row=2)
-    assert isinstance(parsed, LedgerRow)
-    assert parsed.note is None
-    assert parsed.vendor is None
-    assert parsed.trace_id is None
-
-
-def test_parse_ledger_row_recovers_year_from_date_when_year_missing():
-    """If Year cell is blank or junk, derive from Date so older
-    schemas still parse cleanly."""
-    row_values = [
-        "2026-04-24", "Fri", "April", "", "Food", "", "",
-        12.5, "USD", 12.5, 1.0, "chat", "", "",
-    ]
-    parsed = _parse_ledger_row(row_values, sheet_row=2)
-    assert isinstance(parsed, LedgerRow)
-    assert parsed.year == 2026
-
-
-def test_to_action_dict_carries_query_metadata():
-    """The action dict mirrors the query so audit log says exactly what
-    was asked."""
-    engine = _engine_with_seed([
-        {"date": date(2026, 4, 5),  "category": "Food", "amount": 12.50},
-    ])
-    q = _april_query(Intent.QUERY_CATEGORY_TOTAL, category="Food")
-
-    action = engine.answer(q).to_action_dict()
-
-    assert action["type"] == "sheets_query"
-    assert action["status"] == "ok"
-    assert action["intent"] == "query_category_total"
-    assert action["category"] == "Food"
-    assert action["start"] == "2026-04-01"
-    assert action["end"] == "2026-04-30"
-    assert action["label"] == "April 2026"
-    assert action["total_usd"] == 12.50
-    assert action["transaction_count"] == 1

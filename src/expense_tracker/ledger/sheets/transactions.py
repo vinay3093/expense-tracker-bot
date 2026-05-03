@@ -19,10 +19,10 @@ Why hard-code the schema here rather than read it from YAML:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
+from ..base import LastRow, TransactionRow
 from .backend import (
     CellFormat,
     ConditionalBand,
@@ -175,56 +175,32 @@ def header_row() -> list[str]:
     return [col.header for col in TRANSACTIONS_COLUMNS]
 
 
-# ─── A row payload ──────────────────────────────────────────────────────
+# ─── Sheets-specific projection ─────────────────────────────────────────
 
-@dataclass(frozen=True)
-class TransactionRow:
-    """One row about to be appended to the Transactions tab.
+def transaction_row_to_cells(row: TransactionRow) -> list[Any]:
+    """Project a :class:`TransactionRow` to the Sheets cell-list layout.
 
-    Fields map 1-to-1 to :data:`TRANSACTIONS_COLUMNS` in order.
-    ``amount_usd`` and ``fx_rate`` are computed by the currency module
-    before this object is built — see
-    :mod:`expense_tracker.ledger.sheets.currency`.
-
-    ``month`` is the human month name (``"April"``), ``year`` is the
-    4-digit year. ``timestamp`` is the bot's *write* time, distinct
-    from ``date`` (the expense time).
+    Order matches :data:`TRANSACTIONS_COLUMNS`.  Strings used for
+    blank optional cells (``note``, ``vendor``, ``trace_id``) so the
+    Sheets API doesn't render ``None`` as ``"None"``.
     """
-
-    date: date
-    day: str
-    month: str
-    year: int
-    category: str
-    note: str | None
-    vendor: str | None
-    amount: float
-    currency: str
-    amount_usd: float
-    fx_rate: float
-    source: str = "chat"
-    trace_id: str | None = None
-    timestamp: datetime | None = None
-
-    def as_row(self) -> list[Any]:
-        """Project to the cell-list order used by the backend."""
-        ts = self.timestamp.isoformat(timespec="seconds") if self.timestamp else ""
-        return [
-            self.date.isoformat(),
-            self.day,
-            self.month,
-            self.year,
-            self.category,
-            self.note or "",
-            self.vendor or "",
-            self.amount,
-            self.currency,
-            self.amount_usd,
-            self.fx_rate,
-            self.source,
-            self.trace_id or "",
-            ts,
-        ]
+    ts = row.timestamp.isoformat(timespec="seconds") if row.timestamp else ""
+    return [
+        row.date.isoformat(),
+        row.day,
+        row.month,
+        row.year,
+        row.category,
+        row.note or "",
+        row.vendor or "",
+        row.amount,
+        row.currency,
+        row.amount_usd,
+        row.fx_rate,
+        row.source,
+        row.trace_id or "",
+        ts,
+    ]
 
 
 # ─── Tab init / append ──────────────────────────────────────────────────
@@ -301,39 +277,30 @@ def append_transactions(
     if not backend.has_worksheet(sheet_format.transactions.sheet_name):
         init_transactions_tab(backend, sheet_format)
     ws = backend.get_worksheet(sheet_format.transactions.sheet_name)
-    ws.append_rows([r.as_row() for r in rows])
+    ws.append_rows([transaction_row_to_cells(r) for r in rows])
     return ws
 
 
 # ─── Last-row read / delete / edit (used by /undo & /edit) ─────────────
 
-@dataclass(frozen=True)
-class LastRow:
-    """Snapshot of the bottom-most data row in the Transactions tab.
 
-    The chat correction layer needs both the raw cell values (to echo
-    back to the user — "deleted: $40 Food on Apr 27") and the spreadsheet
-    row index (so it can call delete_rows / update on the right row).
+def _empty_last_row() -> LastRow:
+    """Snapshot used when the Transactions tab has no data rows."""
+    return LastRow(is_empty=True, row_index=None, values={})
 
-    Empty Transactions tab → ``row_index`` is ``None`` and ``values`` is
-    an empty list.
+
+def _row_to_values_dict(values: list[Any]) -> dict[str, Any]:
+    """Project a positional Sheets row to the canonical key map.
+
+    Cells beyond the row's actual length are filled with empty
+    strings — matches the tolerant style of the old
+    ``LastRow.value()`` accessor.
     """
-
-    row_index: int | None
-    values: list[Any]
-
-    @property
-    def is_empty(self) -> bool:
-        return self.row_index is None
-
-    def value(self, key: str) -> Any:
-        """Project the raw row to a column by its schema key."""
-        if self.is_empty:
-            return None
-        idx = index_for(key)
-        if idx >= len(self.values):
-            return ""
-        return self.values[idx]
+    out: dict[str, Any] = {}
+    for col in TRANSACTIONS_COLUMNS:
+        idx = index_for(col.key)
+        out[col.key] = values[idx] if idx < len(values) else ""
+    return out
 
 
 def get_last_row(
@@ -347,7 +314,7 @@ def get_last_row(
     """
     name = sheet_format.transactions.sheet_name
     if not backend.has_worksheet(name):
-        return LastRow(row_index=None, values=[])
+        return _empty_last_row()
 
     ws = backend.get_worksheet(name)
     last_col_letter = col_index_to_letter(len(TRANSACTIONS_COLUMNS) - 1)
@@ -362,12 +329,16 @@ def get_last_row(
             last_data_row_offset = offset
 
     if last_data_row_offset is None:
-        return LastRow(row_index=None, values=[])
+        return _empty_last_row()
 
     sheet_row = 2 + last_data_row_offset
     full_row = ws.get_values(f"A{sheet_row}:{last_col_letter}{sheet_row}")
     values = full_row[0] if full_row else []
-    return LastRow(row_index=sheet_row, values=list(values))
+    return LastRow(
+        is_empty=False,
+        row_index=sheet_row,
+        values=_row_to_values_dict(list(values)),
+    )
 
 
 def delete_last_row(
@@ -467,3 +438,22 @@ def _apply_transactions_formatting(ws: WorksheetHandle, sheet_format: SheetForma
                 background_color=fmt.month_band_color,
             )
         )
+
+
+__all__ = [
+    "TRANSACTIONS_COLUMNS",
+    "ColumnType",
+    "LastRow",
+    "TransactionColumn",
+    "TransactionRow",
+    "append_transactions",
+    "col_for",
+    "delete_last_row",
+    "get_last_row",
+    "header_row",
+    "index_for",
+    "init_transactions_tab",
+    "reinit_transactions_tab",
+    "transaction_row_to_cells",
+    "update_last_row_fields",
+]

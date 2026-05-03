@@ -37,19 +37,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date as date_cls
-from datetime import datetime
 from typing import Any
 
 from ..extractor.categories import CategoryRegistry
 from ..extractor.schemas import Intent, RetrievalQuery
-from ..ledger.sheets.backend import SheetsBackend, col_index_to_letter
-from ..ledger.sheets.exceptions import SheetsError
-from ..ledger.sheets.format import SheetFormat
-from ..ledger.sheets.transactions import (
-    TRANSACTIONS_COLUMNS,
-    index_for,
+from ..ledger.base import (
+    LedgerBackend,
+    LedgerError,
+    LedgerInspection,
+    LedgerRow,
+    SkippedRow,
 )
-from .correction import _parse_date_cell
 from .exceptions import PipelineError
 
 _log = logging.getLogger(__name__)
@@ -71,74 +69,7 @@ class RetrievalError(PipelineError):
         self.cause = cause
 
 
-# ─── Public data shapes ─────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class LedgerRow:
-    """One parsed row from the ``Transactions`` master ledger.
-
-    Mirrors :class:`expense_tracker.ledger.sheets.transactions.TransactionRow`
-    but is built from *read* values (strings / numbers from the Sheets
-    API), not from a typed in-memory object. Cells that fail to parse
-    are coerced to a safe default (``None`` for optional fields, ``0.0``
-    for ``amount_usd`` so totals don't blow up on one bad row).
-    """
-
-    row_index: int
-    """1-based spreadsheet row index. Useful for diagnostics + `/undo`."""
-
-    date: date_cls
-    day: str
-    month: str
-    year: int
-    category: str
-    note: str | None
-    vendor: str | None
-    amount: float
-    currency: str
-    amount_usd: float
-    fx_rate: float
-    source: str
-    trace_id: str | None
-    timestamp: datetime | None
-
-
-@dataclass(frozen=True)
-class SkippedRow:
-    """One ledger row that the parser couldn't turn into a :class:`LedgerRow`.
-
-    Surfaced by :meth:`RetrievalEngine.inspect_ledger` so the operator
-    can locate and clean up the offending row in Google Sheets. The
-    same row is silently counted in :class:`RetrievalAnswer.skipped_rows`
-    during normal retrieval — never user-visible there.
-    """
-
-    row_index: int
-    """1-based spreadsheet row (matches the row number in the Sheets UI)."""
-
-    reason: str
-    """Human-readable reason: ``"Date cell '2024-13-99': day is out of range"`` etc."""
-
-    raw_values: list[str]
-    """The cells we read for that row, as strings, for diagnostics."""
-
-
-@dataclass(frozen=True)
-class LedgerInspection:
-    """Full parse report of the ``Transactions`` master ledger.
-
-    Returned by :meth:`RetrievalEngine.inspect_ledger`. Useful for
-    diagnostics CLI commands like ``expense --inspect-ledger``.
-    """
-
-    sheet_name: str
-    parsed: list[LedgerRow]
-    skipped: list[SkippedRow]
-
-    @property
-    def total_rows(self) -> int:
-        return len(self.parsed) + len(self.skipped)
+# ─── Retrieval-only data shape ─────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -199,12 +130,10 @@ class RetrievalEngine:
     def __init__(
         self,
         *,
-        backend: SheetsBackend,
-        sheet_format: SheetFormat,
+        ledger: LedgerBackend,
         registry: CategoryRegistry,
     ) -> None:
-        self._backend = backend
-        self._format = sheet_format
+        self._ledger = ledger
         self._registry = registry
 
     def answer(self, query: RetrievalQuery) -> RetrievalAnswer:
@@ -212,19 +141,18 @@ class RetrievalEngine:
 
         Raises:
             RetrievalError: any unexpected failure reading the
-                ``Transactions`` tab. Empty / missing tabs are *not* an
-                error — they yield an empty answer.
+                master ledger.  Empty / missing storage is *not* an
+                error — yields an empty answer.
         """
         try:
-            rows, skipped_count, _skipped_detail = self._read_ledger(
-                collect_skipped_detail=False,
-            )
-        except SheetsError as exc:
+            inspection = self._ledger.read_all(collect_skipped_detail=False)
+        except LedgerError as exc:
             raise RetrievalError(
-                f"failed to read {self._format.transactions.sheet_name!r}: {exc}",
+                f"failed to read {self._ledger.transactions_label!r}: {exc}",
                 cause=exc,
             ) from exc
-        skipped = skipped_count
+        rows = inspection.parsed
+        skipped = len(inspection.skipped)
 
         canonical_category = self._canonicalize_category(query.category)
         start, end = query.time_range.start, query.time_range.end
@@ -298,210 +226,21 @@ class RetrievalEngine:
     def inspect_ledger(self) -> LedgerInspection:
         """Read every row of the master ledger and report parse results.
 
-        Same parser the retrieval path uses, but exposes which rows
-        failed and *why* so the operator can locate and clean them up
-        in the spreadsheet UI.
-
-        Empty / missing tabs return an inspection with both lists empty.
+        Used by the ``--inspect-ledger`` CLI command for diagnosing
+        rows that fail to parse (so the operator can locate + fix
+        them in the storage UI).  Empty / missing storage returns an
+        inspection with both lists empty.
 
         Raises:
             RetrievalError: unexpected read failure.
         """
         try:
-            parsed, _count, skipped = self._read_ledger(collect_skipped_detail=True)
-        except SheetsError as exc:
+            return self._ledger.read_all(collect_skipped_detail=True)
+        except LedgerError as exc:
             raise RetrievalError(
-                f"failed to read {self._format.transactions.sheet_name!r}: {exc}",
+                f"failed to read {self._ledger.transactions_label!r}: {exc}",
                 cause=exc,
             ) from exc
-        return LedgerInspection(
-            sheet_name=self._format.transactions.sheet_name,
-            parsed=parsed,
-            skipped=skipped,
-        )
-
-    def _read_ledger(
-        self, *, collect_skipped_detail: bool = False,
-    ) -> tuple[list[LedgerRow], int, list[SkippedRow]]:
-        """Read every data row from the ``Transactions`` tab.
-
-        Returns ``(rows, skipped_count, skipped_detail)``. The detail
-        list is populated only when ``collect_skipped_detail=True`` —
-        the hot retrieval path keeps it empty to avoid building extra
-        diagnostic strings on every query. Skipped rows are those
-        whose Date or Amount (USD) cells couldn't be parsed; they're
-        logged but never raise — one bad row shouldn't black-hole the
-        whole answer.
-        """
-        name = self._format.transactions.sheet_name
-        if not self._backend.has_worksheet(name):
-            return [], 0, []
-
-        ws = self._backend.get_worksheet(name)
-        last_col_letter = col_index_to_letter(len(TRANSACTIONS_COLUMNS) - 1)
-        raw = ws.get_values(f"A2:{last_col_letter}")
-
-        out: list[LedgerRow] = []
-        skipped_count = 0
-        skipped_detail: list[SkippedRow] = []
-        for offset, row_values in enumerate(raw):
-            sheet_row = 2 + offset
-            parsed = _parse_ledger_row(row_values, sheet_row=sheet_row)
-            if parsed is None:
-                continue
-            if isinstance(parsed, _ParseError):
-                skipped_count += 1
-                _log.debug(
-                    "Skipping row %d in %s: %s",
-                    sheet_row,
-                    name,
-                    parsed.reason,
-                )
-                if collect_skipped_detail:
-                    skipped_detail.append(
-                        SkippedRow(
-                            row_index=sheet_row,
-                            reason=parsed.reason,
-                            raw_values=[str(v) for v in row_values],
-                        ),
-                    )
-                continue
-            out.append(parsed)
-        return out, skipped_count, skipped_detail
-
-
-# ─── Per-row parser ────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class _ParseError:
-    reason: str
-
-
-def _parse_ledger_row(
-    values: list[Any],
-    *,
-    sheet_row: int,
-) -> LedgerRow | _ParseError | None:
-    """Coerce one read row into a :class:`LedgerRow`.
-
-    Returns:
-        - ``None`` for empty rows (no Date cell at all → skip silently).
-        - :class:`_ParseError` for rows where Date or Amount (USD)
-          can't be parsed (caller increments a counter + debug-logs).
-        - :class:`LedgerRow` on success.
-
-    Optional cells (Note, Vendor, Trace ID, Timestamp) parse to ``None``
-    when blank rather than to empty strings — easier to format in the
-    reply layer.
-    """
-    if not values:
-        return None
-
-    def _at(key: str) -> Any:
-        idx = index_for(key)
-        if idx >= len(values):
-            return ""
-        return values[idx]
-
-    date_raw = _at("date")
-    if date_raw in ("", None):
-        return None
-
-    try:
-        d = _parse_date_cell(date_raw)
-    except (TypeError, ValueError) as exc:
-        return _ParseError(f"Date cell {date_raw!r}: {exc}")
-
-    amount_usd_raw = _at("amount_usd")
-    amount_usd = _coerce_number(amount_usd_raw, default=0.0)
-    if amount_usd is None:
-        return _ParseError(f"Amount (USD) cell {amount_usd_raw!r} not numeric")
-
-    amount_raw = _at("amount")
-    parsed_amount = _coerce_number(amount_raw, default=amount_usd)
-    amount = parsed_amount if parsed_amount is not None else amount_usd
-
-    fx_raw = _at("fx_rate")
-    parsed_fx = _coerce_number(fx_raw, default=1.0)
-    fx_rate = parsed_fx if parsed_fx is not None else 1.0
-
-    year_raw = _at("year")
-    try:
-        year = int(year_raw) if year_raw not in ("", None) else d.year
-    except (TypeError, ValueError):
-        year = d.year
-
-    timestamp_raw = _at("timestamp")
-    timestamp: datetime | None = None
-    if isinstance(timestamp_raw, datetime):
-        timestamp = timestamp_raw
-    elif isinstance(timestamp_raw, str) and timestamp_raw.strip():
-        try:
-            timestamp = datetime.fromisoformat(timestamp_raw.strip())
-        except ValueError:
-            timestamp = None
-
-    return LedgerRow(
-        row_index=sheet_row,
-        date=d,
-        day=str(_at("day") or ""),
-        month=str(_at("month") or ""),
-        year=year,
-        category=str(_at("category") or "").strip(),
-        note=_optional_str(_at("note")),
-        vendor=_optional_str(_at("vendor")),
-        amount=amount,
-        currency=str(_at("currency") or "USD").strip().upper() or "USD",
-        amount_usd=amount_usd,
-        fx_rate=fx_rate,
-        source=str(_at("source") or "").strip(),
-        trace_id=_optional_str(_at("trace_id")),
-        timestamp=timestamp,
-    )
-
-
-def _optional_str(raw: Any) -> str | None:
-    """Trim a cell, returning ``None`` for empties."""
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    return s or None
-
-
-def _coerce_number(raw: Any, *, default: float) -> float | None:
-    """Parse a numeric cell tolerantly.
-
-    Handles three real-world formats from Google Sheets:
-
-    * Pure numbers (``42``, ``42.0``) — pass through ``float()``.
-    * Empty / ``None`` cells — return ``default``.
-    * Locale-formatted strings (``"1,000.00"``, ``"$1,000.00"``,
-      ``"  42 "``) — strip commas, currency signs, and whitespace
-      before parsing. This is what ``gspread.get_values`` returns by
-      default for cells displayed with US thousand-separators.
-
-    Returns ``None`` only when the value is genuinely non-numeric
-    (e.g. ``"oops"``) so callers can flag it as a parse error.
-    """
-    if raw in ("", None):
-        return default
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return float(raw)
-    s = str(raw).strip()
-    if not s:
-        return default
-    # Strip common display-only decoration. Order matters: drop
-    # currency / percent first, then thousand separators, then the
-    # leading-plus that ``float`` already accepts but we prefer to
-    # ignore explicitly.
-    cleaned = s.replace(",", "").replace("$", "").replace("\u00a0", "").strip()
-    if cleaned.startswith("+"):
-        cleaned = cleaned[1:]
-    try:
-        return float(cleaned)
-    except (TypeError, ValueError):
-        return None
 
 
 __all__ = [

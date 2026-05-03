@@ -86,18 +86,11 @@ class _StubCorrector:
 def _row(values: dict[str, object]) -> LastRow:
     """Build a :class:`LastRow` from a key->value mapping.
 
-    Maps schema keys into the right positional slots so ``snap.value()``
-    returns what tests expect.
+    Stores the values as a dict so ``snap.value(key)`` returns what
+    the tests expect.  Other unset columns return ``None`` via
+    ``dict.get``.
     """
-    from expense_tracker.ledger.sheets.transactions import (
-        TRANSACTIONS_COLUMNS,
-        index_for,
-    )
-
-    cells: list[object] = ["" for _ in TRANSACTIONS_COLUMNS]
-    for k, v in values.items():
-        cells[index_for(k)] = v
-    return LastRow(row_index=2, values=cells)
+    return LastRow(is_empty=False, row_index=2, values=dict(values))
 
 
 def _processor(
@@ -165,7 +158,7 @@ def test_last_renders_pretty_summary_for_authorized_user():
 
 
 def test_last_handles_empty_ledger_gracefully():
-    stub = _StubCorrector(peek=LastRow(row_index=None, values=[]))
+    stub = _StubCorrector(peek=LastRow(is_empty=True, row_index=None, values={}))
     proc = _processor(allowed_ids={42}, corrector=stub)
 
     reply = proc.process_last(user_id=42)
@@ -218,7 +211,7 @@ def test_undo_reports_deletion_and_recompute_status():
 
 def test_undo_on_empty_ledger_replies_friendly():
     result = UndoResult(
-        deleted_row=LastRow(row_index=None, values=[]),
+        deleted_row=LastRow(is_empty=True, row_index=None, values={}),
         transactions_tab="Transactions",
         monthly_tab=None,
         monthly_tab_recomputed=False,

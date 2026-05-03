@@ -47,24 +47,14 @@ import calendar
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date as date_cls
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..extractor.categories import CategoryRegistry
 from ..extractor.schemas import ExpenseEntry
-from ..ledger.sheets.backend import SheetsBackend, WorksheetHandle
+from ..ledger.base import LedgerBackend, LedgerError, TransactionRow
 from ..ledger.sheets.currency import ConversionResult, CurrencyConverter, CurrencyError
-from ..ledger.sheets.exceptions import SheetsError
-from ..ledger.sheets.format import SheetFormat
-from ..ledger.sheets.month_builder import force_month_recompute
-from ..ledger.sheets.transactions import (
-    TransactionRow,
-    append_transactions,
-    init_transactions_tab,
-)
-from ..ledger.sheets.year_builder import ensure_month_tab
 from .exceptions import ExpenseLogError
 
 _log = logging.getLogger(__name__)
@@ -80,11 +70,13 @@ class LogResult:
     """
 
     transactions_tab: str
-    """Name of the master ledger tab the row landed in."""
+    """Human-readable label of the master ledger destination — for the
+    Sheets edition that's the tab name, for the Postgres edition the
+    table name."""
 
-    monthly_tab: str
-    """Name of the monthly summary tab covering this date — auto-created
-    on the first transaction of a new month."""
+    monthly_tab: str | None
+    """Sheets-edition only: name of the monthly summary tab covering
+    this date.  ``None`` for the Postgres edition (no per-month tabs)."""
 
     row: TransactionRow
     """The exact row appended to the Transactions tab."""
@@ -94,8 +86,9 @@ class LogResult:
     or ``"stale_cache_fallback"``."""
 
     monthly_tab_created: bool
-    """True iff this call had to create the monthly tab (first row of a
-    new month). Useful for telling the user "I set up May 2026 for you"."""
+    """Sheets-edition only: ``True`` iff this call had to create the
+    monthly tab (first row of a new month).  Always ``False`` on the
+    Postgres edition — there's nothing per-month to provision."""
 
     def to_action_dict(self) -> dict[str, Any]:
         """Project to the ``action`` shape stored on ConversationTurn."""
@@ -128,16 +121,14 @@ class ExpenseLogger:
     def __init__(
         self,
         *,
-        backend: SheetsBackend,
-        sheet_format: SheetFormat,
+        ledger: LedgerBackend,
         registry: CategoryRegistry,
         converter: CurrencyConverter,
         timezone: str,
         source: str = "chat",
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        self._backend = backend
-        self._format = sheet_format
+        self._ledger = ledger
         self._registry = registry
         self._converter = converter
         self._tz = ZoneInfo(timezone)
@@ -173,11 +164,15 @@ class ExpenseLogger:
             ) from exc
 
         try:
-            self._ensure_transactions_tab()
-            monthly_handle, created = self._ensure_monthly_tab(entry.date)
-        except SheetsError as exc:
+            self._ledger.init_storage()
+            period = self._ledger.ensure_period(
+                year=entry.date.year,
+                month=entry.date.month,
+                categories=self._registry.canonical_names(),
+            )
+        except LedgerError as exc:
             raise ExpenseLogError(
-                f"failed to prepare destination tabs: {exc}",
+                f"failed to prepare ledger destination: {exc}",
                 cause=exc,
             ) from exc
 
@@ -189,36 +184,29 @@ class ExpenseLogger:
         )
 
         try:
-            append_transactions(self._backend, self._format, [row])
-        except SheetsError as exc:
+            self._ledger.append([row])
+        except LedgerError as exc:
             raise ExpenseLogError(
-                f"failed to append to {self._format.transactions.sheet_name!r}: {exc}",
+                f"failed to append to {self._ledger.transactions_label!r}: {exc}",
                 cause=exc,
             ) from exc
 
-        # Nudge the monthly tab to recompute against the just-appended
-        # row. Sheets sometimes serves a stale formula cache after API
-        # writes — re-asserting headline formulas forces a fresh eval.
-        # Failure here is a UX concern, never a data correctness one,
-        # so we log + swallow and let the chat reply still confirm the
-        # log succeeded.
-        try:
-            force_month_recompute(
-                self._backend,
-                self._format,
-                year=entry.date.year,
-                month=entry.date.month,
-                categories=self._registry.canonical_names(),
-            )
-        except SheetsError as exc:
-            _log.warning("Recompute nudge failed for %s: %s", entry.date, exc)
+        # Nudge any backend-side recomputation (Sheets formula cache
+        # bust).  Failure logged + swallowed — the row is already
+        # safely written; recomputation is a UX concern, never a
+        # correctness one.
+        self._ledger.recompute_period(
+            year=entry.date.year,
+            month=entry.date.month,
+            categories=self._registry.canonical_names(),
+        )
 
         return LogResult(
-            transactions_tab=self._format.transactions.sheet_name,
-            monthly_tab=monthly_handle.title,
+            transactions_tab=self._ledger.transactions_label,
+            monthly_tab=period.name,
             row=row,
             fx_source=conv.source,
-            monthly_tab_created=created,
+            monthly_tab_created=period.created,
         )
 
     # ─── Helpers ────────────────────────────────────────────────────────
@@ -235,34 +223,6 @@ class ExpenseLogger:
             from_currency=entry.currency,
             on_date=entry.date,
         )
-
-    def _ensure_transactions_tab(self) -> WorksheetHandle:
-        """Create the master ledger if it doesn't exist; cheap if it does."""
-        return init_transactions_tab(self._backend, self._format)
-
-    def _ensure_monthly_tab(
-        self, on_date: date_cls
-    ) -> tuple[WorksheetHandle, bool]:
-        """Make sure the monthly summary tab for ``on_date`` exists.
-
-        Returns ``(handle, created)`` where ``created`` is True iff this
-        call provisioned the tab (so the chat reply can mention it).
-        """
-        sheet_name = self._format.monthly_sheet_name(
-            month_name=calendar.month_name[on_date.month],
-            month_short=calendar.month_abbr[on_date.month],
-            month_num=on_date.month,
-            year=on_date.year,
-        )
-        existed = self._backend.has_worksheet(sheet_name)
-        handle = ensure_month_tab(
-            self._backend,
-            self._format,
-            year=on_date.year,
-            month=on_date.month,
-            categories=self._registry.canonical_names(),
-        )
-        return handle, not existed
 
     def _build_row(
         self,

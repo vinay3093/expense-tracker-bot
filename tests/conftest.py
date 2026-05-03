@@ -18,8 +18,30 @@ import pytest
 
 from expense_tracker.config import reset_settings_cache_for_tests
 from expense_tracker.extractor.categories import reset_registry_cache_for_tests
-from expense_tracker.ledger.sheets.format import reset_format_cache_for_tests
+from expense_tracker.ledger.sheets.adapter import SheetsLedgerBackend
+from expense_tracker.ledger.sheets.backend import FakeSheetsBackend, SheetsBackend
+from expense_tracker.ledger.sheets.format import (
+    SheetFormat,
+    get_sheet_format,
+    reset_format_cache_for_tests,
+)
 from expense_tracker.llm._fake import FakeLLMClient
+
+
+def make_sheets_ledger(
+    backend: SheetsBackend | None = None,
+    sheet_format: SheetFormat | None = None,
+) -> SheetsLedgerBackend:
+    """Build a Sheets edition :class:`LedgerBackend` for tests.
+
+    Centralises the ``backend + sheet_format -> ledger`` wiring so
+    test files don't have to repeat it.  Defaults: an empty
+    :class:`FakeSheetsBackend` and the bundled YAML format.
+    """
+    return SheetsLedgerBackend(
+        backend=backend or FakeSheetsBackend(title="Test Sheet", spreadsheet_id="sid"),
+        sheet_format=sheet_format or get_sheet_format(),
+    )
 
 _PROJECT_ENV_VARS = (
     "LLM_PROVIDER",
@@ -45,6 +67,9 @@ _PROJECT_ENV_VARS = (
     "EXPENSE_SHEET_ID",
     "SHEET_FORMAT_FILE",
     "SHEETS_TIMEOUT_S",
+    "STORAGE_BACKEND",
+    "DATABASE_URL",
+    "NOCODB_BASE_URL",
 )
 
 

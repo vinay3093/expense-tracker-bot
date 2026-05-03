@@ -30,17 +30,8 @@ from datetime import date as date_cls
 from typing import Any
 
 from ..extractor.categories import CategoryRegistry
-from ..ledger.sheets.backend import SheetsBackend
+from ..ledger.base import LastRow, LedgerBackend, LedgerError
 from ..ledger.sheets.currency import CurrencyConverter, CurrencyError
-from ..ledger.sheets.exceptions import SheetsError
-from ..ledger.sheets.format import SheetFormat
-from ..ledger.sheets.month_builder import force_month_recompute
-from ..ledger.sheets.transactions import (
-    LastRow,
-    delete_last_row,
-    get_last_row,
-    update_last_row_fields,
-)
 from .exceptions import ExpenseLogError
 
 _log = logging.getLogger(__name__)
@@ -62,7 +53,11 @@ class UndoResult:
 
     deleted_row: LastRow
     transactions_tab: str
+    """Human-readable label of the destination (Sheets tab name or
+    Postgres table name)."""
     monthly_tab: str | None
+    """Sheets-edition only: name of the recomputed monthly tab.
+    ``None`` when the backend has no per-month concept."""
     monthly_tab_recomputed: bool
 
 
@@ -93,13 +88,11 @@ class CorrectionLogger:
     def __init__(
         self,
         *,
-        backend: SheetsBackend,
-        sheet_format: SheetFormat,
+        ledger: LedgerBackend,
         registry: CategoryRegistry,
         converter: CurrencyConverter,
     ) -> None:
-        self._backend = backend
-        self._format = sheet_format
+        self._ledger = ledger
         self._registry = registry
         self._converter = converter
 
@@ -112,8 +105,8 @@ class CorrectionLogger:
         confirmation when paranoid mode is on. Free of side effects.
         """
         try:
-            return get_last_row(self._backend, self._format)
-        except SheetsError as exc:
+            return self._ledger.get_last()
+        except LedgerError as exc:
             raise CorrectionError(f"failed to read last row: {exc}", cause=exc) from exc
 
     def undo(self) -> UndoResult:
@@ -126,8 +119,8 @@ class CorrectionLogger:
         consistent.
         """
         try:
-            snap = delete_last_row(self._backend, self._format)
-        except SheetsError as exc:
+            snap = self._ledger.delete_last()
+        except LedgerError as exc:
             raise CorrectionError(
                 f"failed to delete last row: {exc}", cause=exc,
             ) from exc
@@ -135,7 +128,7 @@ class CorrectionLogger:
         monthly_tab, recomputed = self._maybe_recompute_for_row(snap)
         return UndoResult(
             deleted_row=snap,
-            transactions_tab=self._format.transactions.sheet_name,
+            transactions_tab=self._ledger.transactions_label,
             monthly_tab=monthly_tab,
             monthly_tab_recomputed=recomputed,
         )
@@ -161,8 +154,8 @@ class CorrectionLogger:
             )
 
         try:
-            before = get_last_row(self._backend, self._format)
-        except SheetsError as exc:
+            before = self._ledger.get_last()
+        except LedgerError as exc:
             raise CorrectionError(
                 f"failed to read last row: {exc}", cause=exc,
             ) from exc
@@ -171,7 +164,7 @@ class CorrectionLogger:
             return EditResult(
                 before=before,
                 applied={},
-                transactions_tab=self._format.transactions.sheet_name,
+                transactions_tab=self._ledger.transactions_label,
                 monthly_tab=None,
                 monthly_tab_recomputed=False,
             )
@@ -199,10 +192,8 @@ class CorrectionLogger:
             updates["fx_rate"] = float(conv.rate)
 
         try:
-            update_last_row_fields(
-                self._backend, self._format, updates=updates,
-            )
-        except SheetsError as exc:
+            self._ledger.update_last(updates)
+        except LedgerError as exc:
             raise CorrectionError(
                 f"failed to update last row: {exc}", cause=exc,
             ) from exc
@@ -211,7 +202,7 @@ class CorrectionLogger:
         return EditResult(
             before=before,
             applied=updates,
-            transactions_tab=self._format.transactions.sheet_name,
+            transactions_tab=self._ledger.transactions_label,
             monthly_tab=monthly_tab,
             monthly_tab_recomputed=recomputed,
         )
@@ -238,17 +229,11 @@ class CorrectionLogger:
                        snap.value("date"))
             return None, False
 
-        try:
-            tab_name = force_month_recompute(
-                self._backend,
-                self._format,
-                year=on_date.year,
-                month=on_date.month,
-                categories=self._registry.canonical_names(),
-            )
-        except SheetsError as exc:
-            _log.warning("Recompute nudge failed for %s: %s", on_date, exc)
-            return None, False
+        tab_name = self._ledger.recompute_period(
+            year=on_date.year,
+            month=on_date.month,
+            categories=self._registry.canonical_names(),
+        )
         return tab_name, tab_name is not None
 
 

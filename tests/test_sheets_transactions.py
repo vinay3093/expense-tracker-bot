@@ -19,7 +19,10 @@ from expense_tracker.ledger.sheets import (
 )
 from expense_tracker.ledger.sheets.backend import _FakeWorksheet
 from expense_tracker.ledger.sheets.exceptions import SheetFormatError
-from expense_tracker.ledger.sheets.transactions import ColumnType
+from expense_tracker.ledger.sheets.transactions import (
+    ColumnType,
+    transaction_row_to_cells,
+)
 
 # ─── Schema lookups ────────────────────────────────────────────────────
 
@@ -85,7 +88,7 @@ def test_transaction_row_as_row_order_matches_columns():
         trace_id="req_abc",
         timestamp=datetime(2026, 4, 24, 12, 0, 0),
     )
-    cells = row.as_row()
+    cells = transaction_row_to_cells(row)
     assert len(cells) == len(TRANSACTIONS_COLUMNS)
     assert cells[transactions_index_for("category")] == "Food"
     assert cells[transactions_index_for("amount")] == 4.50
@@ -113,7 +116,7 @@ def test_transaction_row_handles_missing_optional_fields():
         amount_usd=10.0,
         fx_rate=1.0,
     )
-    cells = row.as_row()
+    cells = transaction_row_to_cells(row)
     assert cells[transactions_index_for("note")] == ""
     assert cells[transactions_index_for("vendor")] == ""
     assert cells[transactions_index_for("trace_id")] == ""
@@ -319,7 +322,8 @@ def test_get_last_row_handles_empty_tab():
     snap = get_last_row(b, fmt)
     assert snap.is_empty
     assert snap.row_index is None
-    assert snap.values == []
+    assert snap.is_empty
+    assert snap.values == {}
 
 
 def test_get_last_row_handles_missing_tab():

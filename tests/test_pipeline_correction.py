@@ -40,6 +40,7 @@ from expense_tracker.pipeline.correction import (
     UndoResult,
 )
 from expense_tracker.pipeline.logger import ExpenseLogger
+from tests.conftest import make_sheets_ledger
 
 TZ = "America/Chicago"
 FROZEN_NOW = datetime(2026, 4, 24, 14, 30, tzinfo=ZoneInfo(TZ))
@@ -98,8 +99,7 @@ def fake_backend() -> FakeSheetsBackend:
 def _seed_two_expenses(*, backend, sheet_format, registry, converter) -> None:
     """Log two USD expenses on consecutive April 2026 dates."""
     logger = ExpenseLogger(
-        backend=backend,
-        sheet_format=sheet_format,
+        ledger=make_sheets_ledger(backend, sheet_format),
         registry=registry,
         converter=converter,
         timezone=TZ,
@@ -132,8 +132,7 @@ def _seed_two_expenses(*, backend, sheet_format, registry, converter) -> None:
 
 def _make_corrector(*, backend, sheet_format, registry, converter) -> CorrectionLogger:
     return CorrectionLogger(
-        backend=backend,
-        sheet_format=sheet_format,
+        ledger=make_sheets_ledger(backend, sheet_format),
         registry=registry,
         converter=converter,
     )
@@ -318,8 +317,7 @@ def test_edit_amount_on_inr_row_reuses_currency_and_fx(
 ):
     # Seed one INR expense so amount edits have to re-run FX.
     logger = ExpenseLogger(
-        backend=fake_backend,
-        sheet_format=sheet_format,
+        ledger=make_sheets_ledger(fake_backend, sheet_format),
         registry=registry,
         converter=inr_seeded_converter,
         timezone=TZ,
@@ -448,7 +446,7 @@ def test_recompute_failure_does_not_break_undo(
         raise SheetsError("sheets API hiccup")
 
     monkeypatch.setattr(
-        "expense_tracker.pipeline.correction.force_month_recompute", _boom,
+        "expense_tracker.ledger.sheets.adapter.force_month_recompute", _boom,
     )
 
     result = corrector.undo()

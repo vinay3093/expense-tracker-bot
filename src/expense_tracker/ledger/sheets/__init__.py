@@ -17,6 +17,7 @@ is exported for tests / advanced use, but most callers won't need it.
 
 from __future__ import annotations
 
+from .adapter import SheetsLedgerBackend
 from .backend import (
     CellFormat,
     ConditionalBand,
@@ -106,6 +107,7 @@ __all__ = [
     "SheetsBackend",
     "SheetsConfigError",
     "SheetsError",
+    "SheetsLedgerBackend",
     "SheetsNotFoundError",
     "TransactionColumn",
     "TransactionRow",

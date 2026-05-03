@@ -30,6 +30,7 @@ from expense_tracker.ledger.sheets.format import get_sheet_format
 from expense_tracker.ledger.sheets.transactions import col_for as txn_col_for
 from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import ExpenseLogger, LogResult
+from tests.conftest import make_sheets_ledger
 
 TZ = "America/Chicago"
 FROZEN_NOW = datetime(2026, 4, 24, 14, 30, tzinfo=ZoneInfo(TZ))
@@ -90,8 +91,7 @@ def _make_logger(
     source: str = "chat",
 ) -> ExpenseLogger:
     return ExpenseLogger(
-        backend=backend,
-        sheet_format=sheet_format,
+        ledger=make_sheets_ledger(backend, sheet_format),
         registry=registry,
         converter=converter,
         timezone=TZ,

@@ -44,6 +44,7 @@ from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import ExpenseLogger
 from expense_tracker.pipeline.retrieval import RetrievalEngine
 from expense_tracker.storage.jsonl_store import JsonlChatStore
+from tests.conftest import make_sheets_ledger
 
 TZ = "America/Chicago"
 FROZEN_NOW = datetime(2026, 4, 24, 14, 30, tzinfo=ZoneInfo(TZ))
@@ -85,16 +86,14 @@ def _build_pipeline(
         now=_frozen_now,
     )
     expense_logger = ExpenseLogger(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=make_sheets_ledger(backend, fmt),
         registry=registry,
         converter=converter,
         timezone=TZ,
         now=_frozen_now,
     )
     retrieval_engine = RetrievalEngine(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=make_sheets_ledger(backend, fmt),
         registry=registry,
     )
     pipeline = ChatPipeline(

@@ -25,6 +25,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ProviderName = Literal["groq", "ollama", "openai", "anthropic", "fake"]
 ChatStoreBackend = Literal["jsonl"]
+StorageBackend = Literal["sheets", "nocodb", "postgres"]
 
 
 class Settings(BaseSettings):
@@ -167,6 +168,38 @@ class Settings(BaseSettings):
         default=30.0,
         ge=1.0,
         description="Per-request timeout for Google Sheets API calls.",
+    )
+
+    # ─── Storage backend selection (Step 10b: Sheets vs Postgres) ──────
+    STORAGE_BACKEND: StorageBackend = Field(
+        default="sheets",
+        description=(
+            "Which ledger backend the bot writes / reads from:\n"
+            "* 'sheets' — Google Sheets edition (Step 4-9).  Default.\n"
+            "* 'nocodb' / 'postgres' — Postgres + NocoDB edition (Step 10b).\n"
+            "Setting this to 'nocodb' requires DATABASE_URL pointing at a\n"
+            "reachable Postgres (Supabase, local docker, RDS, ...).  Both\n"
+            "editions live in the same codebase; flipping this var is the\n"
+            "only change needed at runtime."
+        ),
+    )
+    DATABASE_URL: SecretStr | None = Field(
+        default=None,
+        description=(
+            "SQLAlchemy connection URL for the Postgres edition.  "
+            "Examples:\n"
+            "  postgresql+psycopg://user:pass@db.example.supabase.co:5432/postgres\n"
+            "  postgresql+psycopg://expenses:expenses@localhost:5432/expenses\n"
+            "Required only when STORAGE_BACKEND=nocodb."
+        ),
+    )
+    NOCODB_BASE_URL: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of the NocoDB UI (for printing 'Open NocoDB' links "
+            "from the CLI / Telegram replies).  Optional — purely a UX "
+            "convenience.  Example: http://localhost:8080 ."
+        ),
     )
 
     # ─── Telegram bot front-end (Step 7) ────────────────────────────────

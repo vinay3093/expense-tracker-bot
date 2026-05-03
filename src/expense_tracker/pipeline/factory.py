@@ -1,7 +1,25 @@
 """Build a wired :class:`ChatPipeline` from :class:`Settings`.
 
-Importing this module pulls the LLM, storage, extractor, and Sheets
-layers; keep the import path lazy in tests that don't need them.
+Every public factory here returns one of the high-level pipeline
+objects (``ChatPipeline``, ``ExpenseLogger``, ``CorrectionLogger``,
+``RetrievalEngine``, ``SummaryEngine``) wired to the
+:class:`LedgerBackend` selected by ``settings.STORAGE_BACKEND``.
+
+Importing this module pulls the LLM, storage, extractor, and ledger
+adapter layers; keep the import path lazy in tests that don't need
+them.
+
+Why one factory module, not five
+--------------------------------
+Wiring is the messiest part of the system.  Concentrating it here
+means:
+
+* The "which arguments does ``ExpenseLogger`` take?" knowledge lives
+  in exactly one place.
+* Adding a new dependency (e.g. an audit logger, a metrics exporter)
+  is a single edit, not a hunt across CLI + Telegram + tests.
+* Tests can mock the high-level outputs without re-implementing the
+  wiring graph.
 """
 
 from __future__ import annotations
@@ -9,10 +27,9 @@ from __future__ import annotations
 from ..config import Settings, get_settings
 from ..extractor.categories import get_registry
 from ..extractor.orchestrator import Orchestrator
-from ..ledger.sheets.backend import SheetsBackend
+from ..ledger.base import LedgerBackend
+from ..ledger.factory import get_ledger_backend
 from ..ledger.sheets.currency import CurrencyConverter, get_converter
-from ..ledger.sheets.factory import get_sheets_backend
-from ..ledger.sheets.format import SheetFormat, get_sheet_format
 from .chat import ChatPipeline
 from .correction import CorrectionLogger
 from .logger import ExpenseLogger
@@ -24,20 +41,19 @@ def get_chat_pipeline(
     settings: Settings | None = None,
     *,
     fake: bool = False,
-    backend: SheetsBackend | None = None,
-    sheet_format: SheetFormat | None = None,
+    ledger: LedgerBackend | None = None,
     converter: CurrencyConverter | None = None,
     orchestrator: Orchestrator | None = None,
 ) -> ChatPipeline:
-    """Wire a ChatPipeline using settings + the layer factories.
+    """Wire a :class:`ChatPipeline` using settings + the layer factories.
 
-    Every dependency is overridable for tests / advanced callers; pass
-    one in to short-circuit its factory call. ``fake=True`` returns an
-    in-memory :class:`FakeSheetsBackend` and skips the real network.
+    Every dependency is overridable for tests / advanced callers.
+    ``fake=True`` returns an in-memory fake for the active edition
+    (Sheets fake worksheet for the Sheets edition; SQLite-in-memory
+    is the test analogue for the Postgres edition).
     """
     cfg = settings or get_settings()
-    fmt = sheet_format or get_sheet_format()
-    backend = backend or get_sheets_backend(cfg, fake=fake)
+    ledger = ledger or get_ledger_backend(cfg, fake=fake)
     registry = get_registry()
     converter = converter or get_converter(
         primary_currency=cfg.DEFAULT_CURRENCY,
@@ -47,8 +63,7 @@ def get_chat_pipeline(
     orchestrator = orchestrator or Orchestrator.from_settings(cfg)
 
     expense_logger = ExpenseLogger(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=ledger,
         registry=registry,
         converter=converter,
         timezone=cfg.TIMEZONE,
@@ -56,15 +71,13 @@ def get_chat_pipeline(
     )
 
     correction_logger = CorrectionLogger(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=ledger,
         registry=registry,
         converter=converter,
     )
 
     retrieval_engine = RetrievalEngine(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=ledger,
         registry=registry,
     )
 
@@ -80,22 +93,19 @@ def get_retrieval_engine(
     settings: Settings | None = None,
     *,
     fake: bool = False,
-    backend: SheetsBackend | None = None,
-    sheet_format: SheetFormat | None = None,
+    ledger: LedgerBackend | None = None,
 ) -> RetrievalEngine:
     """Wire a standalone :class:`RetrievalEngine` for ad-hoc CLI use.
 
-    Mirrors :func:`get_correction_logger` but for the read side. The
-    engine never invokes the LLM; it just reads + filters + aggregates
-    the master ledger, so no orchestrator / converter is needed.
+    The engine never invokes the LLM; it just reads + filters +
+    aggregates the master ledger, so no orchestrator / converter is
+    needed.
     """
     cfg = settings or get_settings()
-    fmt = sheet_format or get_sheet_format()
-    backend = backend or get_sheets_backend(cfg, fake=fake)
+    ledger = ledger or get_ledger_backend(cfg, fake=fake)
     registry = get_registry()
     return RetrievalEngine(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=ledger,
         registry=registry,
     )
 
@@ -104,8 +114,7 @@ def get_summary_engine(
     settings: Settings | None = None,
     *,
     fake: bool = False,
-    backend: SheetsBackend | None = None,
-    sheet_format: SheetFormat | None = None,
+    ledger: LedgerBackend | None = None,
     retrieval_engine: RetrievalEngine | None = None,
 ) -> SummaryEngine:
     """Wire a standalone :class:`SummaryEngine` for ``--summary`` /
@@ -113,14 +122,12 @@ def get_summary_engine(
 
     Builds a :class:`RetrievalEngine` under the hood (or accepts an
     existing one) so the focal-window + prior-window reads share the
-    same ledger parsing semantics. ``today_provider`` defaults to
-    :func:`datetime.date.today`; tests inject a fixed anchor.
+    same ledger parsing semantics.
     """
     cfg = settings or get_settings()
-    fmt = sheet_format or get_sheet_format()
-    backend = backend or get_sheets_backend(cfg, fake=fake)
+    ledger = ledger or get_ledger_backend(cfg, fake=fake)
     retrieval_engine = retrieval_engine or get_retrieval_engine(
-        cfg, fake=fake, backend=backend, sheet_format=fmt,
+        cfg, fake=fake, ledger=ledger,
     )
     return SummaryEngine(retrieval_engine=retrieval_engine)
 
@@ -129,20 +136,12 @@ def get_correction_logger(
     settings: Settings | None = None,
     *,
     fake: bool = False,
-    backend: SheetsBackend | None = None,
-    sheet_format: SheetFormat | None = None,
+    ledger: LedgerBackend | None = None,
     converter: CurrencyConverter | None = None,
 ) -> CorrectionLogger:
-    """Wire a standalone :class:`CorrectionLogger` for ad-hoc CLI use.
-
-    Mirrors :func:`get_chat_pipeline` but skips the LLM-side
-    orchestrator / chat-reply formatter — ``--undo`` / ``--edit-*``
-    don't need them. Tests / advanced callers can inject any of the
-    deps to short-circuit factory calls.
-    """
+    """Wire a standalone :class:`CorrectionLogger` for ad-hoc CLI use."""
     cfg = settings or get_settings()
-    fmt = sheet_format or get_sheet_format()
-    backend = backend or get_sheets_backend(cfg, fake=fake)
+    ledger = ledger or get_ledger_backend(cfg, fake=fake)
     registry = get_registry()
     converter = converter or get_converter(
         primary_currency=cfg.DEFAULT_CURRENCY,
@@ -150,8 +149,7 @@ def get_correction_logger(
         timeout_s=cfg.SHEETS_TIMEOUT_S,
     )
     return CorrectionLogger(
-        backend=backend,
-        sheet_format=fmt,
+        ledger=ledger,
         registry=registry,
         converter=converter,
     )
