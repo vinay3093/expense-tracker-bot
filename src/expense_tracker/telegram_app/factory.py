@@ -215,24 +215,76 @@ def run_polling(
         sorted(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
         or "<none — bot will refuse everyone>",
     )
-    # `stop_signals=None` is essential under PID 1 supervisors (tini,
-    # docker, k8s) where Application.run_polling()'s default attempt
-    # to register SIGINT/SIGTERM/SIGABRT handlers either fails silently
-    # or hangs the asyncio loop *before* polling starts — exactly the
-    # "alive container, queued messages, no Application started log"
-    # symptom we hit on Hugging Face Spaces.  The platform reaps the
-    # container on its own, so we don't need PTB's signal handling.
-    #
-    # `drop_pending_updates=True` discards messages that piled up in
-    # Telegram's queue while the bot was unreachable.  Useful on every
-    # cold-start: replaying old commands the user assumed had failed
-    # would be confusing and could double-log expenses.
-    _log.info("Calling Application.run_polling() — past this point PTB owns the loop.")
-    app.run_polling(
-        allowed_updates=["message"],
-        stop_signals=None,
-        drop_pending_updates=True,
-    )
+    # We bypass Application.run_polling() entirely under hosted
+    # containers because empirically (Hugging Face Spaces with PTB
+    # 21.6 + python:3.11-slim + tini PID 1) it hangs *inside* the
+    # initialise() step with no traceback and no PTB log output.
+    # `stop_signals=None` alone wasn't enough.  The manual bootstrap
+    # below gives us a log line per phase so any future hang is
+    # pinpointed instead of hidden behind a single black-box call.
+    import asyncio
+
+    async def _serve_forever() -> None:
+        _log.info("PTB bootstrap: awaiting Application.initialize() ...")
+        await app.initialize()
+        _log.info("PTB bootstrap: initialize() complete — calling start() ...")
+        await app.start()
+        _log.info(
+            "PTB bootstrap: start() complete — beginning updater long-poll "
+            "(drop_pending_updates=True, allowed=['message']) ..."
+        )
+        await app.updater.start_polling(
+            allowed_updates=["message"],
+            drop_pending_updates=True,
+        )
+        _log.info(
+            "PTB bootstrap: updater is polling Telegram — bot is now LIVE. "
+            "DM the bot from any allow-listed Telegram account.",
+        )
+        # Block the coroutine forever; the platform (HF / Docker /
+        # k8s) will SIGTERM us when it wants the container to stop,
+        # which propagates through asyncio.run() → KeyboardInterrupt
+        # → finally-block in run_polling() below.
+        await asyncio.Event().wait()
+
+    try:
+        asyncio.run(_serve_forever())
+    finally:
+        # Best-effort graceful shutdown so we close the HTTPX session
+        # and unregister the bot's getUpdates long-poll on the
+        # Telegram side.  Wrapped because at SIGTERM the loop may
+        # already be torn down — we don't care about errors here.
+        _log.info("PTB bootstrap: shutting down updater + application ...")
+        try:
+            asyncio.run(_graceful_stop(app))
+        except Exception as exc:
+            _log.warning("PTB shutdown raised %s — container exiting anyway.", exc)
+
+
+async def _graceful_stop(app: Application) -> None:
+    """Try to stop the updater and application cleanly on SIGTERM.
+
+    Each step is wrapped because on a hard kill the underlying asyncio
+    loop may have entered a bad state (loop already closed, transport
+    half-shut).  We log per phase so partial shutdowns are debuggable.
+    """
+    if app.updater is not None and app.updater.running:
+        try:
+            await app.updater.stop()
+            _log.info("PTB shutdown: updater stopped.")
+        except Exception as exc:
+            _log.warning("PTB shutdown: updater.stop() failed: %s", exc)
+    if app.running:
+        try:
+            await app.stop()
+            _log.info("PTB shutdown: application stopped.")
+        except Exception as exc:
+            _log.warning("PTB shutdown: application.stop() failed: %s", exc)
+    try:
+        await app.shutdown()
+        _log.info("PTB shutdown: application.shutdown() complete.")
+    except Exception as exc:
+        _log.warning("PTB shutdown: application.shutdown() failed: %s", exc)
 
 
 __all__ = [
