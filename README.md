@@ -1,3 +1,14 @@
+---
+title: Expense Bot
+emoji: "💸"
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Personal Telegram bot that logs expenses into Google Sheets.
+---
+
 # Personal Expense Tracker (chat-driven)
 
 [![CI](https://github.com/vinay3093/expense-tracker-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/vinay3093/expense-tracker-bot/actions/workflows/ci.yml)
