@@ -1,0 +1,115 @@
+# Pings the Hugging Face Space every 36 hours so the free-tier 48-hour
+# idle timer never fires.  Result: the Telegram bot stays up forever
+# without anyone touching anything.
+#
+# Free tier resource cost (per run):
+#   * runtime: ~3 seconds
+#   * GitHub Actions free quota for public repos: unlimited
+#   * Bandwidth: ~1 KB egress
+#
+# Setup (one-time):
+#   1. Add a repo secret named  HF_SPACE_URL  whose value is the
+#      *.hf.space URL of your Space, e.g.:
+#        https://your-username-expense-bot.hf.space
+#      (NOT  https://huggingface.co/spaces/your-username/expense-bot
+#       — that's the HTML page, not the container.)
+#   2. Optionally also add  TELEGRAM_BOT_TOKEN  and  TELEGRAM_CHAT_ID
+#      to receive a Telegram alert when the ping fails (otherwise the
+#      job just goes red in the Actions tab silently).
+#
+# Manual trigger:  Actions tab → "Keep HF Space awake" → Run workflow
+# Cron:            every 36 hours, jittered to avoid the top-of-hour
+#                  thundering herd.
+
+name: Keep HF Space awake
+
+on:
+  schedule:
+    # 36-hour cadence is hard to express in cron (which is hour-of-day
+    # based), so we approximate: 11:17 UTC every day.  That's a 24-hour
+    # period, giving us a 24-hour safety margin before the 48-hour HF
+    # idle window expires.  More frequent than necessary, but each
+    # ping is a single HEAD request → effectively free.
+    - cron: "17 11 * * *"
+  workflow_dispatch:  # manual trigger from the UI
+
+# Don't run multiple keep-alive jobs in parallel — pointless and
+# wastes a worker slot if a previous run is still going.
+concurrency:
+  group: keep-hf-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate HF_SPACE_URL is set
+        env:
+          HF_SPACE_URL: ${{ secrets.HF_SPACE_URL }}
+        run: |
+          if [ -z "${HF_SPACE_URL}" ]; then
+            echo "::error::HF_SPACE_URL secret is not set."
+            echo "Go to repo Settings → Secrets and variables → Actions → New repository secret."
+            echo "Name: HF_SPACE_URL"
+            echo "Value: https://<username>-<space-name>.hf.space"
+            exit 1
+          fi
+          echo "Will ping: ${HF_SPACE_URL}/health"
+
+      - name: Wake the Space (with retry + cold-start tolerance)
+        env:
+          HF_SPACE_URL: ${{ secrets.HF_SPACE_URL }}
+        run: |
+          set -euo pipefail
+
+          # If the Space DID fall asleep, the first request triggers
+          # the cold start (~30-60 s on a free CPU).  We retry up to
+          # 6 times with a long timeout so we wait through the boot
+          # rather than failing on the first connection.
+          for attempt in 1 2 3 4 5 6; do
+            echo "─── attempt ${attempt}/6 ───"
+
+            # --max-time covers the entire request including TLS +
+            # cold start; --connect-timeout is just the TCP handshake.
+            http_code=$(curl \
+              --silent --show-error \
+              --output /tmp/hf-ping.body \
+              --write-out "%{http_code}" \
+              --connect-timeout 15 \
+              --max-time 90 \
+              --retry 0 \
+              "${HF_SPACE_URL}/health" \
+            ) || http_code="000"
+
+            body=$(head -c 200 /tmp/hf-ping.body 2>/dev/null || true)
+            echo "  status: ${http_code}"
+            echo "  body:   ${body}"
+
+            if [ "${http_code}" = "200" ]; then
+              echo "::notice::Space is awake (took ${attempt} attempt(s))."
+              exit 0
+            fi
+
+            if [ "${attempt}" -lt 6 ]; then
+              echo "  retrying in 20s..."
+              sleep 20
+            fi
+          done
+
+          echo "::error::Space did not respond after 6 attempts.  Check Hugging Face Space logs."
+          exit 1
+
+      - name: Notify Telegram on failure (optional)
+        if: failure() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HF_SPACE_URL: ${{ secrets.HF_SPACE_URL }}
+        run: |
+          curl -fsS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ Hugging Face Space wake-up failed — check ${HF_SPACE_URL}/health" \
+            > /dev/null

@@ -497,13 +497,18 @@ The bot starts long-polling. From your phone:
 
 **Important caveat:** the bot only runs while `expense --telegram` is
 running on the laptop. Close the laptop, the bot stops. To run 24/7,
-deploy to Oracle Cloud Free Tier — pick the deploy bundle that
-matches your storage edition:
+pick a deploy bundle:
 
-* **Sheets edition** (default): [`deploy/sheets-edition/DEPLOY.md`](./deploy/sheets-edition/DEPLOY.md)
-* **Postgres + NocoDB edition**: [`deploy/nocodb-edition/DEPLOY.md`](./deploy/nocodb-edition/DEPLOY.md)
+| Edition | Host | Cost | Setup time | Best for |
+|---|---|---|---|---|
+| **Sheets** (default) | **Hugging Face Spaces** | Free forever | 15 min | The recommended starter — see [`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md) |
+| Sheets | Oracle Cloud Free | Free (when capacity available) | 1–2 h | Self-hosted, no public source code — [`deploy/sheets-edition/DEPLOY.md`](./deploy/sheets-edition/DEPLOY.md) |
+| Postgres + NocoDB | Oracle Cloud Free | Free (capacity dependent) | 2–3 h | Power users wanting a UI on top — [`deploy/nocodb-edition/DEPLOY.md`](./deploy/nocodb-edition/DEPLOY.md) |
 
-See §16 Roadmap (Step 9 + 10) for the architecture context.
+The Hugging Face path is the fast win: a 5-minute push gets you a 24/7
+bot with `/health` keep-alive automation via GitHub Actions.  See §16
+Roadmap (Step 9 + 10) for the architecture context, and §16b for the
+full Hugging Face story.
 
 ---
 
@@ -1389,6 +1394,101 @@ CI.
 
 ---
 
+## 14c. Hugging Face Spaces edition (Step 11) — the 24/7 free host
+
+### Why Hugging Face beat every other free 24/7 option in 2026
+
+After exhausting Oracle Cloud Free Tier (capacity issues), Render
+(15-minute idle sleep), and Koyeb (1-hour sleep + acquired by another
+company in 2025), Hugging Face Spaces emerged as the clear winner for
+a personal Telegram bot:
+
+* **Free tier resources**: 2 vCPU, **16 GB RAM** (versus Render's
+  512 MB), unlimited build time, 50 GB of bandwidth — enough headroom
+  for a hobby bot to run essentially forever.
+* **No credit card.**  Sign-up is email + verify only.
+* **48-hour idle window**, easily defeated by a daily cron ping.
+* **Docker-native deploys.**  We control the entire image; HF just
+  builds and runs the `Dockerfile` we ship.
+* **Push-to-deploy via git.**  No vendor CLI, no YAML descriptor,
+  just `git push`.
+
+### What we ship for HF (the moving parts)
+
+| Piece | Location | What it does |
+|---|---|---|
+| Multi-stage Dockerfile | `Dockerfile` | Builds the venv in stage 1, copies to a slim runtime in stage 2, runs as a non-root user under `tini` for clean signal handling.  Honours `$PORT` from any host (HF, Render, Koyeb) by mapping it to `TELEGRAM_HEALTH_PORT` at startup. |
+| Build context filter | `.dockerignore` | Keeps secrets, logs, `.git`, virtualenvs and other dev noise OUT of the image. |
+| Env-var credentials | `src/expense_tracker/ledger/sheets/credentials.py` | The Sheets factory used to require `GOOGLE_SERVICE_ACCOUNT_JSON` (a path).  HF doesn't let you ship files, so we added `GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT` (the full JSON blob).  On startup it's validated, written to `$TMPDIR/expense-tracker-secrets/service-account.json` at chmod 600, and that path is handed to `gspread`. |
+| Tiny health server | `src/expense_tracker/telegram_app/health_server.py` | A 1-thread `http.server` listening on `TELEGRAM_HEALTH_PORT` (default 7860).  `GET /` → `200 alive` for platform probes; `GET /health` → `200 ok` for cron pings; everything else 404. |
+| Deploy bundle | `deploy/huggingface-edition/` | Runbook, secrets checklist, README template that goes inside the HF Space (HF parses YAML front-matter from this README to know the SDK is Docker), `.env.example` for local docker parity testing. |
+| Keep-alive cron | `.github/workflows/keep-hf-alive.yml` | Daily GitHub Actions workflow that hits `${HF_SPACE_URL}/health` with cold-start tolerance (6 retries × 90 s timeout).  Free for public repos. |
+
+### Lifecycle of a request once deployed
+
+```
+Telegram → "today I spent $5 on coffee"
+  ↓
+HF container long-poll picks it up
+  ↓
+expense_tracker.telegram_app.bot.MessageProcessor
+  ↓ (auth check, then…)
+ChatPipeline → IntentClassifier → ExpenseExtractor (Groq)
+  ↓
+SheetsLedgerBackend (the same code path the laptop uses)
+  ↓
+gspread → Google Sheets API → "Transactions" + monthly tab updated
+  ↓
+Telegram reply → "Logged $5 USD on Food (coffee), Sat 3 May."
+```
+
+The `/health` endpoint runs in parallel on a daemon thread; the
+GitHub Actions cron pings it every ~24 hours, well inside the
+48-hour HF idle window.  Result: the container never sleeps, the
+bot is responsive 24/7, and the entire stack costs $0.
+
+### What you can't do with HF (limitations)
+
+1. **No private source.**  Free Spaces are public.  Mitigated by
+   shipping secrets through HF's encrypted Secrets store (never in
+   git) and pointing the Space at the same code that's already on
+   GitHub.
+2. **No persistent disk.**  Filesystem state is wiped on every
+   rebuild.  This is fine for the Sheets edition (state lives in
+   Google Sheets, not on disk) but **disqualifies Hugging Face for
+   the Postgres / NocoDB edition** — that needs durable storage.
+3. **CPU only.**  Groq does the LLM heavy lifting via API; we never
+   need a GPU.
+4. **HF can rebuild your image any time.**  The `Dockerfile` is
+   reproducible from a clean clone, so this is a non-event.
+
+### The 4-step setup
+
+1. Create a Hugging Face account + write token.
+2. Create a Docker Space, paste 5–8 secrets.
+3. `git push huggingface feat/nocodb-edition:main`.
+4. Add `HF_SPACE_URL` to your GitHub repo secrets so the keep-alive
+   cron can find the Space.
+
+The full click-by-click runbook lives in
+[`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md).
+
+### Tests
+
+Two new test files cover the Hugging Face moving parts:
+
+* `tests/test_sheets_credentials.py` — 9 tests: file-path env var,
+  raw JSON env var, mode-600 enforcement, JSON validation, missing
+  fields, idempotency.
+* `tests/test_telegram_health_server.py` — 7 tests: real socket
+  binding on an OS-assigned port, `/`, `/health`, `404`, idempotent
+  start/stop, the optional `maybe_start_health_server` helper.
+
+All 16 are hermetic — no network calls, no Hugging Face API hits,
+no real ports needed beyond the OS-assigned ephemeral test port.
+
+---
+
 ## 15. Maintenance — backup, year rollover, schema migration
 
 ### Backups
@@ -1454,6 +1554,7 @@ to append a new column at the end and the existing rows stay valid
 | 10a | `LedgerBackend` Protocol + universal data shapes (`TransactionRow`, `LedgerRow`, `LastRow`, `SkippedRow`, `LedgerInspection`, `BackendHealth`, `PeriodInfo`) — chat pipeline now backend-agnostic | done |
 | 10b | Postgres + NocoDB edition: SQLAlchemy 2.0 typed models with soft-delete + audit log; `PostgresLedgerBackend` adapter; Alembic migrations; `expense --init-postgres / --postgres-health / --migrate-sheets-to-postgres` CLI commands | done |
 | 10c | `deploy/nocodb-edition/` bundle (docker-compose for Postgres+NocoDB, `setup.sh` with random secrets + alembic, `expense-bot.service` with Postgres ready-wait, runbook with NocoDB UI walkthrough) | done |
+| 11a | Hugging Face Spaces edition: `Dockerfile` (multi-stage, non-root, tini PID-1, `$PORT` honoured), `GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT` env-var credentials, `HealthServer` (GET `/`, `/health`), `deploy/huggingface-edition/` bundle, GitHub Actions cron keep-alive (`.github/workflows/keep-hf-alive.yml`) | done |
 
 ### What "sellable" would require (out of current scope)
 

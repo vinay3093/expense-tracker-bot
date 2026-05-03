@@ -34,6 +34,7 @@ from .bot import (
     make_undo_handler,
     make_whoami_handler,
 )
+from .health_server import maybe_start_health_server
 
 if TYPE_CHECKING:
     from telegram.ext import Application
@@ -192,11 +193,26 @@ def run_polling(
     Blocks until the process is interrupted (Ctrl-C). Long-polling is
     deliberately chosen over webhooks: it works from a laptop / Pi
     without a public URL or TLS cert, and is plenty for personal load.
+
+    When ``TELEGRAM_HEALTH_PORT`` is set, a tiny HTTP health endpoint
+    starts on that port in a daemon thread before polling begins.
+    Required by hosts (Hugging Face Spaces, Render, Railway, ...) that
+    expect every container to expose a listening port; harmless on
+    laptop / VM deploys where the env var stays unset.
     """
-    app = build_application(settings, fake=fake)
+    cfg = settings or get_settings()
+    health = maybe_start_health_server(cfg.TELEGRAM_HEALTH_PORT)
+    if health is not None:
+        _log.info(
+            "Health endpoint enabled on port %d — keep-alive pings + "
+            "platform probes will hit GET /.",
+            cfg.TELEGRAM_HEALTH_PORT,
+        )
+
+    app = build_application(cfg, fake=fake)
     _log.info(
         "Telegram bot starting (long-polling). Allowed users: %s",
-        sorted(parse_allowed_users((settings or get_settings()).TELEGRAM_ALLOWED_USERS))
+        sorted(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS))
         or "<none — bot will refuse everyone>",
     )
     app.run_polling(allowed_updates=["message"])

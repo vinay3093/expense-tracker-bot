@@ -1,0 +1,49 @@
+# Keep the build context lean and — more importantly — keep secrets
+# OUT of the image.  Anything matched here is invisible to the Docker
+# daemon during `docker build`.
+
+# ─── Local secrets / dev artefacts ─────────────────────────────────────
+.env
+.env.*
+secrets/
+deploy/*/.env-deploy
+*.json
+!src/expense_tracker/extractor/data/*.json
+!src/expense_tracker/ledger/sheets/data/*.json
+
+# ─── Python noise ──────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# ─── Logs / runtime data ───────────────────────────────────────────────
+logs/
+*.log
+
+# ─── IDE / OS ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ─── Git / docs (not needed at runtime) ────────────────────────────────
+.git/
+.github/
+.gitignore
+HANDBOOK.docx
+WAKE_UP.md
+deploy/sheets-edition/
+deploy/nocodb-edition/
+docs/
+*.md
+!README.md

@@ -148,6 +148,18 @@ class Settings(BaseSettings):
             "outside git (see .gitignore — secrets/ is ignored)."
         ),
     )
+    GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Alternative to GOOGLE_SERVICE_ACCOUNT_JSON for hosted "
+            "deployments where you can't ship a file (Hugging Face Spaces, "
+            "Render, Koyeb, ...).  Paste the FULL contents of the "
+            "service-account JSON here as a single env var.  On startup, "
+            "the bot writes it to a temp file (chmod 600) and uses that "
+            "path.  Wins over GOOGLE_SERVICE_ACCOUNT_JSON when both are "
+            "set."
+        ),
+    )
     EXPENSE_SHEET_ID: str | None = Field(
         default=None,
         description=(
@@ -220,6 +232,20 @@ class Settings(BaseSettings):
             "their ID, so you can copy it into .env. Leave unset to refuse "
             "every message (safe default — explicit allow-list, no implicit "
             "open access)."
+        ),
+    )
+    TELEGRAM_HEALTH_PORT: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description=(
+            "When set, run a tiny HTTP health endpoint alongside the "
+            "Telegram long-poll loop.  Required by hosts that demand a "
+            "listening port (Hugging Face Spaces defaults to 7860, "
+            "Render to 10000).  Endpoint serves GET / (200 'alive') so "
+            "platform health checks + UptimeRobot / GitHub Actions cron "
+            "keep-alive pings work.  Leave unset for laptop / Oracle VM "
+            "deploys where no port is needed."
         ),
     )
 

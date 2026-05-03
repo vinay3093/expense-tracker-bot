@@ -1,10 +1,55 @@
 # WAKE UP — morning checklist
 
-You went to sleep with the NocoDB / Postgres edition fully wired and
-tested.  Here's exactly what you need to do today.
+You went to sleep with the NocoDB / Postgres edition fully wired
+**and** the Hugging Face Spaces 24/7 hosting bundle ready to push.
+Here's exactly what to do today, in priority order.
 
-This file is on the `feat/nocodb-edition` branch.  Once you're done
-with the morning checklist and happy, merge it into `main`.
+This file is on the `feat/nocodb-edition` branch.  Once you're happy,
+merge into `main`.
+
+---
+
+## ⭐ TOP PRIORITY — get the bot running 24/7 on Hugging Face
+
+This is the path to making the Telegram bot answer your messages
+*even when your laptop is closed*.  All the code is already in place
+(`Dockerfile`, env-var credentials, health server, deploy bundle,
+GitHub Actions cron).  You just need to do 3 click-paths:
+
+### 1. Create a Hugging Face account (2 min, no credit card)
+
+* https://huggingface.co/join → sign up → verify email.
+* Pick a username (becomes the Space URL).
+
+### 2. Create a write token (1 min)
+
+* https://huggingface.co/settings/tokens → "New token"
+  → name `expense-bot-deploy`, type **Write** → Create.
+* **Copy the token** — it's shown once.
+
+### 3. Follow the click-by-click runbook (12 min)
+
+Open: **[`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md)**
+
+It walks you through:
+
+* Creating the Space (Docker SDK, free CPU tier).
+* Pasting 5–8 secrets into the Space Settings.
+* `git push huggingface feat/nocodb-edition:main` to trigger the
+  build.
+* Setting up the GitHub Actions keep-alive (`HF_SPACE_URL` repo
+  secret) so the Space never sleeps.
+* Smoke-testing with `/whoami` and "today I spent $5 on coffee".
+
+When you finish, you should be able to **close your laptop, walk
+away, send a Telegram message from your phone in Texas / anywhere in
+the world**, and the bot replies + writes to Sheets.
+
+That's the whole point.  Do this first.
+
+The Postgres / NocoDB stuff below is the *upgrade path* for later —
+once you have NocoDB-style dashboards on top.  Ignore it today
+unless you specifically want to play with that.
 
 ---
 
@@ -237,6 +282,10 @@ git push origin feat/nocodb-edition  # if you want to keep the branch around
 | `alembic -c alembic.ini history` | All migrations |
 | `STORAGE_BACKEND=sheets expense --chat "..."` | Force Sheets edition for one command |
 | `STORAGE_BACKEND=nocodb expense --chat "..."` | Force Postgres edition for one command |
+| `git push huggingface feat/nocodb-edition:main` | Deploy / update the HF Space |
+| `gh workflow run keep-hf-alive.yml` | Manually wake the HF Space |
+| `curl https://<space>.hf.space/health` | Liveness check (returns `ok`) |
+| `docker build -t expense-bot . && docker run -p 7860:7860 --env-file .env expense-bot` | Local parity test of the HF image |
 
 ---
 

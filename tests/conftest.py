@@ -20,6 +20,9 @@ from expense_tracker.config import reset_settings_cache_for_tests
 from expense_tracker.extractor.categories import reset_registry_cache_for_tests
 from expense_tracker.ledger.sheets.adapter import SheetsLedgerBackend
 from expense_tracker.ledger.sheets.backend import FakeSheetsBackend, SheetsBackend
+from expense_tracker.ledger.sheets.credentials import (
+    reset_for_tests as reset_credentials_cache_for_tests,
+)
 from expense_tracker.ledger.sheets.format import (
     SheetFormat,
     get_sheet_format,
@@ -64,12 +67,16 @@ _PROJECT_ENV_VARS = (
     "DEFAULT_CURRENCY",
     "EXTRACTOR_CATEGORIES_FILE",
     "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT",
     "EXPENSE_SHEET_ID",
     "SHEET_FORMAT_FILE",
     "SHEETS_TIMEOUT_S",
     "STORAGE_BACKEND",
     "DATABASE_URL",
     "NOCODB_BASE_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_HEALTH_PORT",
 )
 
 
@@ -86,6 +93,7 @@ def isolated_env(monkeypatch, tmp_path):
     reset_settings_cache_for_tests()
     reset_registry_cache_for_tests()
     reset_format_cache_for_tests()
+    reset_credentials_cache_for_tests()
 
     def _set(**kv: str) -> None:
         for k, v in kv.items():
@@ -93,11 +101,13 @@ def isolated_env(monkeypatch, tmp_path):
         reset_settings_cache_for_tests()
         reset_registry_cache_for_tests()
         reset_format_cache_for_tests()
+        reset_credentials_cache_for_tests()
 
     yield _set
     reset_settings_cache_for_tests()
     reset_registry_cache_for_tests()
     reset_format_cache_for_tests()
+    reset_credentials_cache_for_tests()
 
 
 @pytest.fixture

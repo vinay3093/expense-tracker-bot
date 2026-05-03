@@ -11,7 +11,12 @@ and rolls up periods ("how am I doing this week vs last week?").
 > * **Sheets edition** (`STORAGE_BACKEND=sheets`, default) — writes into
 >   a Google Sheet shaped like a manual monthly tracker (row per day,
 >   column per category, formula-driven totals + YTD).  Zero infra.
->   Deploy bundle: [`deploy/sheets-edition/`](./deploy/sheets-edition/).
+>   Two deploy targets:
+>   * **Hugging Face Spaces (free, 24/7, recommended starter):**
+>     [`deploy/huggingface-edition/`](./deploy/huggingface-edition/)
+>     — Docker, push-to-deploy, GitHub Actions cron keep-alive.
+>   * **Oracle Cloud Free (self-hosted):**
+>     [`deploy/sheets-edition/`](./deploy/sheets-edition/) — systemd unit on a free VM.
 > * **NocoDB / Postgres edition** (`STORAGE_BACKEND=nocodb`) — writes
 >   into a typed Postgres schema with full audit log + soft-delete,
 >   served behind a NocoDB spreadsheet UI.  Tuned for long-term scale.
@@ -704,6 +709,13 @@ expense-tracker-bot/
 9. **Hosting on Oracle Cloud Free Tier** — two parallel deploy bundles, both targeting free Oracle ARM VMs (or any Ubuntu host):
    - [`deploy/sheets-edition/`](./deploy/sheets-edition/) — Sheets bot under systemd: step-by-step `DEPLOY.md` runbook, idempotent `setup.sh`, `update.sh`, hardened `expense-bot.service` (`ProtectHome=read-only`, 512 MB cap, auto-restart).  Long-polling Telegram = no inbound port / TLS needed.
    - [`deploy/nocodb-edition/`](./deploy/nocodb-edition/) — Postgres + NocoDB stack: docker-compose for Postgres 16 + NocoDB UI on the same VM, `setup.sh` that generates random secrets and runs Alembic migrations, `expense-bot.service` that waits for Postgres to come healthy before starting.
+
+10. **Hosting on Hugging Face Spaces (free, 24/7)** — the recommended path when Oracle capacity is unavailable.  Bundle at [`deploy/huggingface-edition/`](./deploy/huggingface-edition/):
+    - Multi-stage [`Dockerfile`](./Dockerfile) — Python 3.11 slim, builder/runtime split, non-root user, tini PID-1, `$PORT`-aware so the same image runs on HF, Render, Koyeb.
+    - Tiny in-process HTTP health server (`src/expense_tracker/telegram_app/health_server.py`) so platform probes + cron keep-alive pings succeed.
+    - Env-var-based service-account credentials (`GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT`) — no file upload needed; the JSON is materialised to a `chmod 600` temp file at startup.
+    - `git push huggingface main` push-to-deploy; secrets in HF's encrypted Secrets store.
+    - GitHub Actions cron at [`.github/workflows/keep-hf-alive.yml`](./.github/workflows/keep-hf-alive.yml) hits `/health` daily so the 48-hour idle timer never fires.
 10. **Two-edition storage architecture** — `LedgerBackend` Protocol in `src/expense_tracker/ledger/base.py`; Sheets adapter wraps the existing gspread code; `PostgresLedgerBackend` is a SQLAlchemy 2.0 typed implementation with soft-delete, full audit log (`transactions_audit_log` table with old/new JSON snapshots), and cross-dialect support (Postgres in prod, SQLite in tests).  Alembic migrations under `src/expense_tracker/ledger/nocodb/migrations/`.  CLI: `expense --init-postgres`, `expense --postgres-health`, `expense --migrate-sheets-to-postgres` for one-shot data move.
 
 ## Running it
