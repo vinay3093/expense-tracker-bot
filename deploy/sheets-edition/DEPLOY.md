@@ -114,7 +114,7 @@ Still on the VM:
 ```bash
 git clone https://github.com/<your-username>/expense-tracker-bot.git
 cd expense-tracker-bot
-bash deploy/oracle/setup.sh
+bash deploy/sheets-edition/setup.sh
 ```
 
 The script:
@@ -246,7 +246,7 @@ DM the bot from your phone — it should reply within ~1 second.
 | Stop the bot | `sudo systemctl stop expense-bot` |
 | Start it | `sudo systemctl start expense-bot` |
 | Restart it | `sudo systemctl restart expense-bot` |
-| **Deploy new code** | `cd ~/expense-tracker-bot && bash deploy/oracle/update.sh` |
+| **Deploy new code** | `cd ~/expense-tracker-bot && bash deploy/sheets-edition/update.sh` |
 | Inspect the JSONL traces | `tail -f ~/expense-tracker-bot/logs/conversations.jsonl` |
 | Run a one-off `--summary` | `cd ~/expense-tracker-bot && .venv/bin/expense --summary week` |
 

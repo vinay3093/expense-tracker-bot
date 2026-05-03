@@ -6,7 +6,7 @@
 #
 #   ssh ubuntu@<vm-ip>
 #   cd expense-tracker-bot
-#   bash deploy/oracle/update.sh
+#   bash deploy/sheets-edition/update.sh
 #
 # Idempotent.  Safe to re-run.
 # =============================================================================
@@ -30,7 +30,7 @@ log "Reinstalling project (in case deps changed)..."
 ok "Dependencies reconciled"
 
 # Reinstall the systemd unit in case it changed in this commit.
-SERVICE_SRC="${REPO_ROOT}/deploy/oracle/expense-bot.service"
+SERVICE_SRC="${REPO_ROOT}/deploy/sheets-edition/expense-bot.service"
 SERVICE_DST="/etc/systemd/system/expense-bot.service"
 if ! cmp -s "${SERVICE_SRC}" "${SERVICE_DST}"; then
     log "Updating systemd unit..."

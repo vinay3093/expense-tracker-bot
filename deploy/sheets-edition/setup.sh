@@ -9,13 +9,13 @@
 #   ssh ubuntu@<vm-public-ip>
 #   git clone https://github.com/<you>/expense-tracker-bot.git
 #   cd expense-tracker-bot
-#   bash deploy/oracle/setup.sh
+#   bash deploy/sheets-edition/setup.sh
 #
 # What it does:
 #   1. Installs OS packages: python3 (whatever the OS ships), venv, git, build tools.
 #   2. Creates ./.venv/ and installs the project + telegram extras.
 #   3. Creates ./logs and ./secrets with safe permissions.
-#   4. Symlinks deploy/oracle/expense-bot.service into /etc/systemd/system/.
+#   4. Symlinks deploy/sheets-edition/expense-bot.service into /etc/systemd/system/.
 #
 # What it does NOT do (you do these by hand, see DEPLOY.md):
 #   - Write your `.env`         (contains secrets — never put it in git).
@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 LOGS_DIR="${REPO_ROOT}/logs"
 SECRETS_DIR="${REPO_ROOT}/secrets"
-SERVICE_SRC="${REPO_ROOT}/deploy/oracle/expense-bot.service"
+SERVICE_SRC="${REPO_ROOT}/deploy/sheets-edition/expense-bot.service"
 SERVICE_DST="/etc/systemd/system/expense-bot.service"
 
 log()  { printf '\033[1;34m[setup]\033[0m %s\n' "$*"; }
@@ -128,6 +128,6 @@ cat <<EOF
         sudo systemctl enable --now expense-bot
         sudo journalctl -u expense-bot -f      # tail logs (Ctrl-C to detach)
 
- See deploy/oracle/DEPLOY.md for the full runbook.
+ See deploy/sheets-edition/DEPLOY.md for the full runbook.
 =============================================================================
 EOF

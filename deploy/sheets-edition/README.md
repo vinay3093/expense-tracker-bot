@@ -1,7 +1,12 @@
-# `deploy/oracle/` — Oracle Cloud Free Tier deploy bundle
+# `deploy/sheets-edition/` — Oracle Cloud + Google Sheets deploy bundle
 
-Everything needed to run `expense --telegram` 24/7 on a free Oracle
-ARM VM.
+Everything needed to run the **Google Sheets edition** of the bot
+(`STORAGE_BACKEND=sheets`) 24/7 on a free Oracle ARM VM.
+
+> Want the **NocoDB / Postgres edition** instead?  See
+> [`../nocodb-edition/`](../nocodb-edition/).  The two editions
+> share 100% of the chat / LLM / Telegram code; only the storage
+> destination differs.
 
 | File | What |
 |---|---|
@@ -21,7 +26,7 @@ ARM VM.
 
 ```bash
 # On the VM, after cloning the repo:
-bash deploy/oracle/setup.sh
+bash deploy/sheets-edition/setup.sh
 
 # From your laptop:
 scp .env secrets/service-account.json ubuntu@<vm-ip>:~/expense-tracker-bot/

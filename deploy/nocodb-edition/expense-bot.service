@@ -1,0 +1,67 @@
+###############################################################################
+# expense-bot.service — runs `expense --telegram` 24/7 under systemd
+#                        (NocoDB / Postgres edition)
+#
+# Place at:    /etc/systemd/system/expense-bot.service
+# Then:        sudo systemctl daemon-reload
+#              sudo systemctl enable --now expense-bot
+#              sudo journalctl -u expense-bot -f      # tail logs
+#
+# Assumes the layout that deploy/nocodb-edition/setup.sh produces:
+#   /home/ubuntu/expense-tracker-bot/                ← git clone
+#   /home/ubuntu/expense-tracker-bot/.venv/          ← virtualenv
+#   /home/ubuntu/expense-tracker-bot/.env            ← secrets (chmod 600)
+#   /home/ubuntu/expense-tracker-bot/logs/           ← jsonl traces
+#   /var/lib/docker/volumes/expense_postgres_data/   ← Postgres data
+#
+# Difference from the sheets-edition unit: this one waits for the
+# postgres container to be reachable before starting the bot, so a
+# fresh boot doesn't fail with "could not connect" while Docker is
+# still spinning up.  The bot is otherwise identical — same chat,
+# LLM, Telegram code path; only STORAGE_BACKEND in .env differs.
+###############################################################################
+
+[Unit]
+Description=Expense Tracker Telegram Bot — NocoDB / Postgres edition
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+# Optional: if you have a separate postgres container service unit
+# (e.g. via docker-compose@.service), uncomment to chain ordering:
+# After=docker-compose@expense-tracker.service
+# Requires=docker-compose@expense-tracker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+WorkingDirectory=/home/ubuntu/expense-tracker-bot
+# Wait up to 60s for Postgres to accept connections (compose may
+# still be coming up on a fresh boot).  pg_isready is shipped by
+# postgresql-client; the package is pulled in by setup.sh.
+ExecStartPre=/bin/bash -c 'for i in {1..30}; do pg_isready -h 127.0.0.1 -p 5432 -q && exit 0; sleep 2; done; exit 1'
+ExecStart=/home/ubuntu/expense-tracker-bot/.venv/bin/expense --telegram
+
+# pydantic-settings loads `.env` from the WorkingDirectory automatically.
+
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Modest resource caps — the bot is tiny.  Postgres + NocoDB live in
+# their own containers with their own limits (see docker-compose.yml).
+MemoryMax=512M
+CPUQuota=50%
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/expense-tracker-bot/logs
+
+[Install]
+WantedBy=multi-user.target

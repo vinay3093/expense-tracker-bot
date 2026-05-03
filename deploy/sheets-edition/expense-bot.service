@@ -6,7 +6,7 @@
 #              sudo systemctl enable --now expense-bot
 #              sudo journalctl -u expense-bot -f      # tail logs
 #
-# Assumes the layout that deploy/oracle/setup.sh produces:
+# Assumes the layout that deploy/sheets-edition/setup.sh produces:
 #   /home/ubuntu/expense-tracker-bot/                ← git clone
 #   /home/ubuntu/expense-tracker-bot/.venv/          ← virtualenv
 #   /home/ubuntu/expense-tracker-bot/.env            ← secrets (chmod 600)
