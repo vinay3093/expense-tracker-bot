@@ -501,9 +501,9 @@ pick a deploy bundle:
 
 | Edition | Host | Cost | Setup time | Best for |
 |---|---|---|---|---|
-| **Sheets** (default) | **Hugging Face Spaces** | Free forever | 15 min | The recommended starter — see [`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md) |
-| Sheets | Oracle Cloud Free | Free (when capacity available) | 1–2 h | Self-hosted, no public source code — [`deploy/sheets-edition/DEPLOY.md`](./deploy/sheets-edition/DEPLOY.md) |
-| Postgres + NocoDB | Oracle Cloud Free | Free (capacity dependent) | 2–3 h | Power users wanting a UI on top — [`deploy/nocodb-edition/DEPLOY.md`](./deploy/nocodb-edition/DEPLOY.md) |
+| **Sheets** (default) | **Hugging Face Spaces** | Free forever | 15 min | The recommended starter — see [`deploy/huggingface-edition/DEPLOY.md`](../deploy/huggingface-edition/DEPLOY.md) |
+| Sheets | Oracle Cloud Free | Free (when capacity available) | 1–2 h | Self-hosted, no public source code — [`deploy/sheets-edition/DEPLOY.md`](../deploy/sheets-edition/DEPLOY.md) |
+| Postgres + NocoDB | Oracle Cloud Free | Free (capacity dependent) | 2–3 h | Power users wanting a UI on top — [`deploy/nocodb-edition/DEPLOY.md`](../deploy/nocodb-edition/DEPLOY.md) |
 
 The Hugging Face path is the fast win: a 5-minute push gets you a 24/7
 bot with `/health` keep-alive automation via GitHub Actions.  See §16
@@ -1471,7 +1471,7 @@ bot is responsive 24/7, and the entire stack costs $0.
    cron can find the Space.
 
 The full click-by-click runbook lives in
-[`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md).
+[`deploy/huggingface-edition/DEPLOY.md`](../deploy/huggingface-edition/DEPLOY.md).
 
 ### Tests
 

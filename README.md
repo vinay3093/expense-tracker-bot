@@ -1,5 +1,11 @@
 # Personal Expense Tracker (chat-driven)
 
+[![CI](https://github.com/vinay3093/expense-tracker-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/vinay3093/expense-tracker-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-multi--stage-2496ED?logo=docker&logoColor=white)](./Dockerfile)
+[![Hugging Face Spaces](https://img.shields.io/badge/24%2F7%20deploy-Hugging%20Face%20Spaces-FFD21E?logo=huggingface&logoColor=black)](./deploy/huggingface-edition/DEPLOY.md)
+
 A personal project: chat with a bot ("today I spent 40 bucks on food") and have it
 silently log the expense into a typed ledger.  The same bot also answers retrieval
 questions ("how much did I spend on food in April?", "what did I spend on 24 Apr?")
@@ -27,14 +33,63 @@ and rolls up periods ("how am I doing this week vs last week?").
 > runs unchanged.  A one-shot `expense --migrate-sheets-to-postgres`
 > command moves existing Sheets data into Postgres when you're ready.
 
-> **Full project handbook:** [`HANDBOOK.md`](./HANDBOOK.md) — the
+> **Full project handbook:** [`docs/HANDBOOK.md`](./docs/HANDBOOK.md) — the
 > zero-to-running guide covering every external setup step (Google
 > Cloud project, service-account JSON, sheet sharing, Groq key,
 > BotFather, allow-list bootstrap), every `.env` variable, the
 > module-by-module code tour, the data model, FX rates, logs, the
 > self-healing flow, daily cookbook, and troubleshooting. A
-> downloadable Word version is at [`HANDBOOK.docx`](./HANDBOOK.docx)
+> downloadable Word version is at [`docs/HANDBOOK.docx`](./docs/HANDBOOK.docx)
 > (rebuild via `python scripts/build_handbook.py` after edits).
+
+> **One-page architecture:** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+> — module map + layered diagram + "where does X live?" pointers.
+
+## Repository structure
+
+```
+expense-tracker-bot/
+├── src/expense_tracker/         # the package
+│   ├── config.py                  ─ all settings, single source of truth
+│   ├── extractor/                 ─ LLM extraction (intent + expense + retrieval)
+│   ├── llm/                       ─ provider clients (Groq / Ollama / OpenAI / Anthropic)
+│   ├── ledger/                    ─ storage backends behind one Protocol
+│   │   ├── base.py                  · LedgerBackend Protocol + universal data shapes
+│   │   ├── factory.py               · STORAGE_BACKEND switch
+│   │   ├── sheets/                  · Google Sheets edition
+│   │   └── nocodb/                  · Postgres + NocoDB edition (SQLAlchemy + Alembic)
+│   ├── pipeline/                  ─ chat orchestration (logger / retrieval / summary / correction / reply)
+│   ├── telegram_app/              ─ Telegram bot front-end + tiny health endpoint
+│   ├── storage/                   ─ append-only JSONL chat history + LLM trace log
+│   └── __main__.py                ─ CLI (`expense ...`)
+│
+├── tests/                       # ~520 hermetic tests, one file per module under test
+│
+├── deploy/                      # one self-contained recipe per host + edition
+│   ├── huggingface-edition/       ─ Hugging Face Spaces (free, recommended 24/7 host)
+│   ├── sheets-edition/            ─ Oracle Cloud Free + systemd
+│   └── nocodb-edition/            ─ Oracle Cloud Free + docker-compose (Postgres + NocoDB)
+│
+├── docs/                        # all human-facing documentation
+│   ├── HANDBOOK.md                ─ end-to-end project handbook (also as .docx)
+│   ├── ARCHITECTURE.md            ─ one-page module map + diagram
+│   └── WAKE_UP.md                 ─ short hands-on operational checklist
+│
+├── scripts/                     # one-off helpers (build_handbook.py)
+│
+├── .github/workflows/           # CI + Hugging Face keep-alive cron
+│   ├── ci.yml                     ─ pytest on 3.10/3.11/3.12 + ruff + Dockerfile lint
+│   └── keep-hf-alive.yml          ─ daily ping so the Space never sleeps
+│
+├── Dockerfile                   # multi-stage container (used by HF / Render / Koyeb)
+├── alembic.ini                  # Postgres-edition migrations entry point
+├── pyproject.toml               # package metadata + deps + ruff + pytest config
+├── LICENSE                      # MIT
+└── README.md
+```
+
+The full module-by-module tour with rationale lives in
+[`docs/HANDBOOK.md`](./docs/HANDBOOK.md) §6.
 
 ## Why this exists
 

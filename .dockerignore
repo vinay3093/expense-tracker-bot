@@ -40,8 +40,6 @@ Thumbs.db
 .git/
 .github/
 .gitignore
-HANDBOOK.docx
-WAKE_UP.md
 deploy/sheets-edition/
 deploy/nocodb-edition/
 docs/

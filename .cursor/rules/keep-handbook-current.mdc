@@ -1,14 +1,14 @@
 ---
-description: Keep HANDBOOK.md (and HANDBOOK.docx) in sync with code changes
+description: Keep docs/HANDBOOK.md (and docs/HANDBOOK.docx) in sync with code changes
 alwaysApply: true
 ---
 
-# Keep HANDBOOK.md current
+# Keep docs/HANDBOOK.md current
 
-`HANDBOOK.md` is the project's single source of truth for setup,
+`docs/HANDBOOK.md` is the project's single source of truth for setup,
 architecture, configuration, and daily usage. It must never go stale.
 
-## When to update HANDBOOK.md
+## When to update docs/HANDBOOK.md
 
 Update it **in the same commit** whenever the change touches any of:
 
@@ -25,7 +25,7 @@ Update it **in the same commit** whenever the change touches any of:
 
 ## Always-do checklist
 
-After editing `HANDBOOK.md`:
+After editing `docs/HANDBOOK.md`:
 
 1. Bump the "Last updated" line at the top to today's date and the
    current commit short-SHA (placeholder is fine; the commit will
@@ -36,11 +36,11 @@ After editing `HANDBOOK.md`:
    python scripts/build_handbook.py
    ```
 
-3. Stage **both** `HANDBOOK.md` and `HANDBOOK.docx`.
+3. Stage **both** `docs/HANDBOOK.md` and `docs/HANDBOOK.docx`.
 
 ## What not to do
 
-- Do not edit `HANDBOOK.docx` by hand — it is regenerated from
+- Do not edit `docs/HANDBOOK.docx` by hand — it is regenerated from
   markdown.
 - Do not delete sections to "shorten" the handbook. Keep all
   sections; mark obsolete ones explicitly.

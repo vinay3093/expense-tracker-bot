@@ -29,7 +29,7 @@ GitHub Actions cron).  You just need to do 3 click-paths:
 
 ### 3. Follow the click-by-click runbook (12 min)
 
-Open: **[`deploy/huggingface-edition/DEPLOY.md`](./deploy/huggingface-edition/DEPLOY.md)**
+Open: **[`deploy/huggingface-edition/DEPLOY.md`](../deploy/huggingface-edition/DEPLOY.md)**
 
 It walks you through:
 

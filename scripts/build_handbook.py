@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Rebuild HANDBOOK.docx from HANDBOOK.md.
+"""Rebuild docs/HANDBOOK.docx from docs/HANDBOOK.md.
 
-Run this whenever HANDBOOK.md changes so the downloadable Word
+Run this whenever the handbook changes so the downloadable Word
 version stays in sync.
 
 Usage:
@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "HANDBOOK.md"
-TARGET = ROOT / "HANDBOOK.docx"
+SOURCE = ROOT / "docs" / "HANDBOOK.md"
+TARGET = ROOT / "docs" / "HANDBOOK.docx"
 
 
 def main() -> int:

@@ -21,7 +21,7 @@ collect them in a scratchpad before continuing:
 | `TIMEZONE` | Your IANA TZ, e.g. `America/Chicago` | recommended |
 | `DEFAULT_CURRENCY` | `USD` or `INR` etc. | recommended |
 
-> **Don't have these yet?** See the laptop setup section in `HANDBOOK.md`
+> **Don't have these yet?** See the laptop setup section in `docs/HANDBOOK.md`
 > chapters 4 (Sheets) and 7 (Telegram) — they cover every screen.
 
 You'll also need:
