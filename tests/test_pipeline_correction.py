@@ -23,6 +23,16 @@ import pytest
 
 from expense_tracker.extractor.categories import CategoryRegistry, get_registry
 from expense_tracker.extractor.schemas import ExpenseEntry
+from expense_tracker.ledger.sheets.backend import FakeSheetsBackend
+from expense_tracker.ledger.sheets.currency import CurrencyConverter
+from expense_tracker.ledger.sheets.format import get_sheet_format
+from expense_tracker.ledger.sheets.transactions import (
+    col_for as txn_col_for,
+)
+from expense_tracker.ledger.sheets.transactions import (
+    get_last_row,
+    init_transactions_tab,
+)
 from expense_tracker.pipeline.correction import (
     CorrectionError,
     CorrectionLogger,
@@ -30,16 +40,6 @@ from expense_tracker.pipeline.correction import (
     UndoResult,
 )
 from expense_tracker.pipeline.logger import ExpenseLogger
-from expense_tracker.sheets.backend import FakeSheetsBackend
-from expense_tracker.sheets.currency import CurrencyConverter
-from expense_tracker.sheets.format import get_sheet_format
-from expense_tracker.sheets.transactions import (
-    col_for as txn_col_for,
-)
-from expense_tracker.sheets.transactions import (
-    get_last_row,
-    init_transactions_tab,
-)
 
 TZ = "America/Chicago"
 FROZEN_NOW = datetime(2026, 4, 24, 14, 30, tzinfo=ZoneInfo(TZ))
@@ -442,7 +442,7 @@ def test_recompute_failure_does_not_break_undo(
         converter=usd_converter,
     )
 
-    from expense_tracker.sheets.exceptions import SheetsError
+    from expense_tracker.ledger.sheets.exceptions import SheetsError
 
     def _boom(*args, **kwargs):
         raise SheetsError("sheets API hiccup")

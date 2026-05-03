@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..config import get_settings
+from ...config import get_settings
 from .exceptions import SheetFormatError
 
 _DEFAULT_FORMAT_FILE = Path(__file__).parent / "data" / "sheet_format.yaml"
@@ -42,7 +42,7 @@ _DEFAULT_FORMAT_FILE = Path(__file__).parent / "data" / "sheet_format.yaml"
 class CellStyle(BaseModel):
     """Lightweight, YAML-friendly description of a cell's text styling.
 
-    Maps cleanly onto :class:`~expense_tracker.sheets.backend.CellFormat`
+    Maps cleanly onto :class:`~expense_tracker.ledger.sheets.backend.CellFormat`
     while staying small enough to be readable in YAML. Used for the
     emphasis rules that make non-zero cells visually pop.
     """

@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..ledger.sheets.transactions import LastRow
 from ..pipeline.chat import ChatPipeline, ChatTurn
 from ..pipeline.correction import (
     CorrectionError,
@@ -44,7 +45,6 @@ from ..pipeline.summary import (
     SummaryScope,
     format_summary,
 )
-from ..sheets.transactions import LastRow
 from .auth import AuthDecision, Authorizer
 
 if TYPE_CHECKING:

@@ -18,8 +18,8 @@ import pytest
 
 from expense_tracker.config import reset_settings_cache_for_tests
 from expense_tracker.extractor.categories import reset_registry_cache_for_tests
+from expense_tracker.ledger.sheets.format import reset_format_cache_for_tests
 from expense_tracker.llm._fake import FakeLLMClient
-from expense_tracker.sheets.format import reset_format_cache_for_tests
 
 _PROJECT_ENV_VARS = (
     "LLM_PROVIDER",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from expense_tracker.sheets import (
+from expense_tracker.ledger.sheets import (
     FakeSheetsBackend,
     SheetFormat,
     discover_years_present,
@@ -11,7 +11,7 @@ from expense_tracker.sheets import (
     hide_previous_year_monthly_tabs,
     setup_year,
 )
-from expense_tracker.sheets.backend import _FakeWorksheet
+from expense_tracker.ledger.sheets.backend import _FakeWorksheet
 
 SIMPLE_CATEGORIES = ["Food", "Groceries", "House"]
 

@@ -184,7 +184,7 @@ class TransactionRow:
     Fields map 1-to-1 to :data:`TRANSACTIONS_COLUMNS` in order.
     ``amount_usd`` and ``fx_rate`` are computed by the currency module
     before this object is built — see
-    :mod:`expense_tracker.sheets.currency`.
+    :mod:`expense_tracker.ledger.sheets.currency`.
 
     ``month`` is the human month name (``"April"``), ``year`` is the
     4-digit year. ``timestamp`` is the bot's *write* time, distinct

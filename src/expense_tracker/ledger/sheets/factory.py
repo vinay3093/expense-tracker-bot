@@ -7,7 +7,7 @@ gspread only when the production backend is selected.
 
 from __future__ import annotations
 
-from ..config import Settings, get_settings
+from ...config import Settings, get_settings
 from .backend import FakeSheetsBackend, SheetsBackend
 from .exceptions import SheetsConfigError
 

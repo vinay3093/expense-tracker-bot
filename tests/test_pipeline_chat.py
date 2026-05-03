@@ -34,15 +34,15 @@ import pytest
 
 from expense_tracker.extractor.categories import get_registry
 from expense_tracker.extractor.orchestrator import Orchestrator
+from expense_tracker.ledger.sheets.backend import FakeSheetsBackend
+from expense_tracker.ledger.sheets.currency import CurrencyConverter, CurrencyError
+from expense_tracker.ledger.sheets.format import get_sheet_format
+from expense_tracker.ledger.sheets.transactions import col_for as txn_col_for
 from expense_tracker.llm._fake import FakeLLMClient
 from expense_tracker.pipeline.chat import ChatPipeline, ChatTurn
 from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import ExpenseLogger
 from expense_tracker.pipeline.retrieval import RetrievalEngine
-from expense_tracker.sheets.backend import FakeSheetsBackend
-from expense_tracker.sheets.currency import CurrencyConverter, CurrencyError
-from expense_tracker.sheets.format import get_sheet_format
-from expense_tracker.sheets.transactions import col_for as txn_col_for
 from expense_tracker.storage.jsonl_store import JsonlChatStore
 
 TZ = "America/Chicago"
@@ -259,7 +259,7 @@ def _seed_transactions(backend, fmt, *, rows):
     matches what the engine will read — header row, column types, and
     column ordering.
     """
-    from expense_tracker.sheets.transactions import (
+    from expense_tracker.ledger.sheets.transactions import (
         TransactionRow,
         append_transactions,
         init_transactions_tab,

@@ -42,10 +42,10 @@ from typing import Any
 
 from ..extractor.categories import CategoryRegistry
 from ..extractor.schemas import Intent, RetrievalQuery
-from ..sheets.backend import SheetsBackend, col_index_to_letter
-from ..sheets.exceptions import SheetsError
-from ..sheets.format import SheetFormat
-from ..sheets.transactions import (
+from ..ledger.sheets.backend import SheetsBackend, col_index_to_letter
+from ..ledger.sheets.exceptions import SheetsError
+from ..ledger.sheets.format import SheetFormat
+from ..ledger.sheets.transactions import (
     TRANSACTIONS_COLUMNS,
     index_for,
 )
@@ -78,7 +78,7 @@ class RetrievalError(PipelineError):
 class LedgerRow:
     """One parsed row from the ``Transactions`` master ledger.
 
-    Mirrors :class:`expense_tracker.sheets.transactions.TransactionRow`
+    Mirrors :class:`expense_tracker.ledger.sheets.transactions.TransactionRow`
     but is built from *read* values (strings / numbers from the Sheets
     API), not from a typed in-memory object. Cells that fail to parse
     are coerced to a safe default (``None`` for optional fields, ``0.0``

@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 import pytest
 
-from expense_tracker.sheets import (
+from expense_tracker.ledger.sheets import (
     TRANSACTIONS_COLUMNS,
     FakeSheetsBackend,
     SheetFormat,
@@ -17,9 +17,9 @@ from expense_tracker.sheets import (
     transactions_header_row,
     transactions_index_for,
 )
-from expense_tracker.sheets.backend import _FakeWorksheet
-from expense_tracker.sheets.exceptions import SheetFormatError
-from expense_tracker.sheets.transactions import ColumnType
+from expense_tracker.ledger.sheets.backend import _FakeWorksheet
+from expense_tracker.ledger.sheets.exceptions import SheetFormatError
+from expense_tracker.ledger.sheets.transactions import ColumnType
 
 # ─── Schema lookups ────────────────────────────────────────────────────
 
@@ -244,7 +244,7 @@ def test_append_multiple_rows_appended_in_order():
 # ─── reinit_transactions_tab ───────────────────────────────────────────
 
 def test_reinit_creates_tab_when_missing():
-    from expense_tracker.sheets.transactions import reinit_transactions_tab
+    from expense_tracker.ledger.sheets.transactions import reinit_transactions_tab
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -295,7 +295,7 @@ def _seed_two_rows(backend, fmt) -> None:
 
 
 def test_get_last_row_returns_bottom_most_data_row():
-    from expense_tracker.sheets.transactions import get_last_row
+    from expense_tracker.ledger.sheets.transactions import get_last_row
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -310,7 +310,7 @@ def test_get_last_row_returns_bottom_most_data_row():
 
 
 def test_get_last_row_handles_empty_tab():
-    from expense_tracker.sheets.transactions import get_last_row
+    from expense_tracker.ledger.sheets.transactions import get_last_row
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -323,7 +323,7 @@ def test_get_last_row_handles_empty_tab():
 
 
 def test_get_last_row_handles_missing_tab():
-    from expense_tracker.sheets.transactions import get_last_row
+    from expense_tracker.ledger.sheets.transactions import get_last_row
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -332,7 +332,7 @@ def test_get_last_row_handles_missing_tab():
 
 
 def test_delete_last_row_removes_bottom_row_only():
-    from expense_tracker.sheets.transactions import delete_last_row, get_last_row
+    from expense_tracker.ledger.sheets.transactions import delete_last_row, get_last_row
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -348,7 +348,7 @@ def test_delete_last_row_removes_bottom_row_only():
 
 
 def test_delete_last_row_on_empty_returns_empty_snap():
-    from expense_tracker.sheets.transactions import delete_last_row
+    from expense_tracker.ledger.sheets.transactions import delete_last_row
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -359,7 +359,7 @@ def test_delete_last_row_on_empty_returns_empty_snap():
 
 
 def test_update_last_row_fields_patches_only_named_cols():
-    from expense_tracker.sheets.transactions import (
+    from expense_tracker.ledger.sheets.transactions import (
         get_last_row,
         update_last_row_fields,
     )
@@ -384,7 +384,7 @@ def test_update_last_row_fields_patches_only_named_cols():
 
 
 def test_update_last_row_fields_on_empty_is_noop():
-    from expense_tracker.sheets.transactions import update_last_row_fields
+    from expense_tracker.ledger.sheets.transactions import update_last_row_fields
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
@@ -396,7 +396,7 @@ def test_update_last_row_fields_on_empty_is_noop():
 
 def test_reinit_wipes_existing_rows():
     """The whole point of reinit: throw away existing data."""
-    from expense_tracker.sheets.transactions import reinit_transactions_tab
+    from expense_tracker.ledger.sheets.transactions import reinit_transactions_tab
 
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})

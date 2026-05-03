@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import pytest
 
+from expense_tracker.ledger.sheets.transactions import LastRow
 from expense_tracker.pipeline.correction import (
     CorrectionError,
     EditResult,
     UndoResult,
 )
-from expense_tracker.sheets.transactions import LastRow
 from expense_tracker.telegram_app.auth import Authorizer
 from expense_tracker.telegram_app.bot import (
     CorrectionProcessor,
@@ -89,7 +89,7 @@ def _row(values: dict[str, object]) -> LastRow:
     Maps schema keys into the right positional slots so ``snap.value()``
     returns what tests expect.
     """
-    from expense_tracker.sheets.transactions import (
+    from expense_tracker.ledger.sheets.transactions import (
         TRANSACTIONS_COLUMNS,
         index_for,
     )

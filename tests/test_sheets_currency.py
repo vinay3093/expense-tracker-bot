@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from expense_tracker.sheets.currency import (
+from expense_tracker.ledger.sheets.currency import (
     ConversionResult,
     CurrencyConverter,
     CurrencyError,

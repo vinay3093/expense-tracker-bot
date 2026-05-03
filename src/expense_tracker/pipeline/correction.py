@@ -16,7 +16,7 @@ After every successful undo / edit we ask the (year, month)-affected
 monthly tab to recompute, working around a Google Sheets quirk where
 API-driven changes to ``Transactions`` don't always invalidate the
 formula cache on dependent tabs. See
-:func:`expense_tracker.sheets.month_builder.force_month_recompute`.
+:func:`expense_tracker.ledger.sheets.month_builder.force_month_recompute`.
 
 Failure model: typed errors (``SheetsError``, ``CurrencyError``) get
 wrapped in :class:`CorrectionError` so the chat layer catches one type.
@@ -30,12 +30,12 @@ from datetime import date as date_cls
 from typing import Any
 
 from ..extractor.categories import CategoryRegistry
-from ..sheets.backend import SheetsBackend
-from ..sheets.currency import CurrencyConverter, CurrencyError
-from ..sheets.exceptions import SheetsError
-from ..sheets.format import SheetFormat
-from ..sheets.month_builder import force_month_recompute
-from ..sheets.transactions import (
+from ..ledger.sheets.backend import SheetsBackend
+from ..ledger.sheets.currency import CurrencyConverter, CurrencyError
+from ..ledger.sheets.exceptions import SheetsError
+from ..ledger.sheets.format import SheetFormat
+from ..ledger.sheets.month_builder import force_month_recompute
+from ..ledger.sheets.transactions import (
     LastRow,
     delete_last_row,
     get_last_row,

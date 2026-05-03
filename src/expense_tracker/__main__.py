@@ -360,7 +360,7 @@ def _cmd_extract(text: str) -> int:
 
 def _open_backend(cfg: Settings, *, fake: bool):
     """Construct a backend, translating typed errors into CLI exits."""
-    from .sheets import SheetsError, get_sheets_backend
+    from .ledger.sheets import SheetsError, get_sheets_backend
 
     try:
         return get_sheets_backend(cfg, fake=fake)
@@ -447,7 +447,7 @@ def _cmd_list_sheets(*, fake: bool) -> int:
 
 
 def _cmd_init_transactions(*, fake: bool) -> int:
-    from .sheets import SheetsError, get_sheet_format, init_transactions_tab
+    from .ledger.sheets import SheetsError, get_sheet_format, init_transactions_tab
 
     cfg = get_settings()
     backend = _open_backend(cfg, fake=fake)
@@ -466,8 +466,8 @@ def _cmd_init_transactions(*, fake: bool) -> int:
 
 def _cmd_reinit_transactions(*, fake: bool) -> int:
     """Wipe and recreate the Transactions tab. Destructive."""
-    from .sheets import SheetsError, get_sheet_format
-    from .sheets.transactions import reinit_transactions_tab
+    from .ledger.sheets import SheetsError, get_sheet_format
+    from .ledger.sheets.transactions import reinit_transactions_tab
 
     cfg = get_settings()
     backend = _open_backend(cfg, fake=fake)
@@ -497,8 +497,8 @@ def _cmd_inspect_ledger(*, fake: bool) -> int:
     row(s)``; this command tells you *which* rows so you can clean them
     up in the Sheets UI.
     """
+    from .ledger.sheets import SheetsError
     from .pipeline import RetrievalError, get_retrieval_engine
-    from .sheets import SheetsError
 
     cfg = get_settings()
     backend = _open_backend(cfg, fake=fake)
@@ -536,7 +536,7 @@ def _cmd_inspect_ledger(*, fake: bool) -> int:
 
 
 def _cmd_build_month(value: str, *, fake: bool, overwrite: bool) -> int:
-    from .sheets import SheetsError, build_month_tab, get_sheet_format
+    from .ledger.sheets import SheetsError, build_month_tab, get_sheet_format
 
     year, month = _parse_year_month(value, label="--build-month")
     cfg = get_settings()
@@ -564,7 +564,7 @@ def _cmd_build_month(value: str, *, fake: bool, overwrite: bool) -> int:
 
 
 def _cmd_build_ytd(value: str, *, fake: bool, overwrite: bool) -> int:
-    from .sheets import SheetsError, build_ytd_tab, get_sheet_format
+    from .ledger.sheets import SheetsError, build_ytd_tab, get_sheet_format
 
     year = _parse_year(value, label="--build-ytd")
     cfg = get_settings()
@@ -593,8 +593,8 @@ def _cmd_build_ytd(value: str, *, fake: bool, overwrite: bool) -> int:
 
 def _cmd_chat(text: str, *, fake: bool) -> int:
     """Drive one full chat turn end-to-end and pretty-print the result."""
+    from .ledger.sheets import SheetsError
     from .pipeline import get_chat_pipeline
-    from .sheets import SheetsError
 
     cfg = get_settings()
     print(f"Provider : {cfg.LLM_PROVIDER}")
@@ -681,13 +681,13 @@ def _cmd_summary(scope_arg: str, *, fake: bool) -> int:
     inherits all of :class:`RetrievalEngine`'s parsing semantics. The
     Telegram bot uses the same engine but renders ``compact=True``.
     """
+    from .ledger.sheets import SheetsError
     from .pipeline import (
         RetrievalError,
         SummaryScope,
         format_summary,
         get_summary_engine,
     )
-    from .sheets import SheetsError
 
     cfg = get_settings()
     scope = SummaryScope(scope_arg)
@@ -716,7 +716,7 @@ def _cmd_summary(scope_arg: str, *, fake: bool) -> int:
 def _cmd_setup_year(
     value: str, *, fake: bool, overwrite: bool, hide_previous: bool,
 ) -> int:
-    from .sheets import SheetsError, get_sheet_format, setup_year
+    from .ledger.sheets import SheetsError, get_sheet_format, setup_year
 
     year = _parse_year(value, label="--setup-year")
     cfg = get_settings()
@@ -780,8 +780,8 @@ def _format_last_row_oneline(snap: Any) -> str:
 
 
 def _cmd_undo(*, fake: bool) -> int:
+    from .ledger.sheets import SheetsError
     from .pipeline import CorrectionError, get_correction_logger
-    from .sheets import SheetsError
 
     cfg = get_settings()
     print(f"Backend  : {'fake' if fake else 'gspread'}")
@@ -821,8 +821,8 @@ def _cmd_undo(*, fake: bool) -> int:
 def _cmd_edit(
     *, fake: bool, amount: float | None, category: str | None,
 ) -> int:
+    from .ledger.sheets import SheetsError
     from .pipeline import CorrectionError, get_correction_logger
-    from .sheets import SheetsError
 
     cfg = get_settings()
     print(f"Backend  : {'fake' if fake else 'gspread'}")

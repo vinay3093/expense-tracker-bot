@@ -33,6 +33,7 @@ from expense_tracker.extractor.schemas import (
     RetrievalQuery,
     TimeRange,
 )
+from expense_tracker.ledger.sheets.transactions import TransactionRow
 from expense_tracker.pipeline.exceptions import ExpenseLogError
 from expense_tracker.pipeline.logger import LogResult
 from expense_tracker.pipeline.reply import format_reply
@@ -41,7 +42,6 @@ from expense_tracker.pipeline.retrieval import (
     RetrievalAnswer,
     RetrievalError,
 )
-from expense_tracker.sheets.transactions import TransactionRow
 
 
 def _row(

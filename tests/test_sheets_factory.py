@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from expense_tracker.config import get_settings
-from expense_tracker.sheets import (
+from expense_tracker.ledger.sheets import (
     FakeSheetsBackend,
     SheetsConfigError,
     get_sheets_backend,
