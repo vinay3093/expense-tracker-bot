@@ -1,20 +1,26 @@
 # Personal Expense Tracker (chat-driven)
 
 A personal project: chat with a bot ("today I spent 40 bucks on food") and have it
-silently log the expense into a Google Sheet that mirrors the layout I already use
-manually — one row per day, one column per category, daily totals on the right,
-column totals at the bottom. The same bot also answers retrieval questions
-("how much did I spend on food in April?" / "what did I spend on 24 Apr?").
+silently log the expense into a typed ledger.  The same bot also answers retrieval
+questions ("how much did I spend on food in April?", "what did I spend on 24 Apr?")
+and rolls up periods ("how am I doing this week vs last week?").
 
-> **Status:** Step 8a — period summaries are live. Logging, correcting,
-> asking ("how much did I spend on food in April?", "show last 5
-> expenses", "what did I spend on 24 Apr?"), *and* rolling up
-> (`expense --summary week|month|year`, `/summary` on Telegram, with
-> apples-to-apples prior-period delta) all flow through the same
-> chat pipeline — over CLI (`expense --chat …`) or Telegram. Foreign
-> currencies (e.g. INR) are converted to USD on the way in, re-converted
-> on amount edits, and aggregated in USD on the way out. Next up: Step 8b
-> healthcheck and Step 8c log rotation.
+> **Status:** Step 10 — the bot now ships in **two storage editions**, both
+> backed by the *exact same* chat / LLM / Telegram code:
+>
+> * **Sheets edition** (`STORAGE_BACKEND=sheets`, default) — writes into
+>   a Google Sheet shaped like a manual monthly tracker (row per day,
+>   column per category, formula-driven totals + YTD).  Zero infra.
+>   Deploy bundle: [`deploy/sheets-edition/`](./deploy/sheets-edition/).
+> * **NocoDB / Postgres edition** (`STORAGE_BACKEND=nocodb`) — writes
+>   into a typed Postgres schema with full audit log + soft-delete,
+>   served behind a NocoDB spreadsheet UI.  Tuned for long-term scale.
+>   Deploy bundle: [`deploy/nocodb-edition/`](./deploy/nocodb-edition/).
+>
+> Switch editions by changing one env var; everything else (Telegram bot,
+> retrieval queries, summaries, undo / edit, FX conversion, prompts)
+> runs unchanged.  A one-shot `expense --migrate-sheets-to-postgres`
+> command moves existing Sheets data into Postgres when you're ready.
 
 > **Full project handbook:** [`HANDBOOK.md`](./HANDBOOK.md) — the
 > zero-to-running guide covering every external setup step (Google
@@ -36,25 +42,30 @@ update itself.
 ## High-level architecture
 
 ```
-┌────────────────┐    text     ┌──────────────────┐   structured    ┌──────────────┐
-│  Chat client   │ ──────────► │  LLM extractor   │ ──────────────► │  Sheets      │
-│  (CLI first,   │             │  (Groq / Ollama, │  ExpenseEntry   │  writer      │
-│  Telegram      │             │  JSON-mode)      │  {date,         │  (gspread)   │
-│  later)        │ ◄────────── │                  │   category,     │              │
-└────────────────┘   reply     └──────────────────┘   amount, note} └──────────────┘
-                                       ▲
-                                       │ retrieval query
-                                       │
-                                ┌──────────────────┐
-                                │  Sheets reader   │
+┌────────────────┐    text     ┌──────────────────┐   structured    ┌────────────────────────┐
+│  Chat client   │ ──────────► │  LLM extractor   │ ──────────────► │   LedgerBackend        │
+│  (Telegram /   │             │  (Groq / Ollama, │  ExpenseEntry   │   (Protocol)           │
+│  CLI / both)   │             │  JSON-mode)      │  {date,         ├────────────────────────┤
+│                │ ◄────────── │                  │   category,     │  Sheets edition  ──┐   │
+└────────────────┘   reply     └──────────────────┘   amount, note} │  Postgres edition ─┼─► │
+                                       ▲                            └────────────────────┼───┘
+                                       │ retrieval query                                 │
+                                ┌──────────────────┐                                     │
+                                │  RetrievalEngine │  reads back through the same Protocol
                                 │  + aggregator    │
                                 └──────────────────┘
 ```
 
-Two flows share the same parser:
+Three flows share the same Protocol:
 
-- **Logging flow** — extract `{date, category, amount, note}` → append to sheet → confirm.
-- **Retrieval flow** — extract `{intent, time_range, category}` → read sheet → reduce → answer.
+- **Logging** — extract `{date, category, amount, note}` → `ledger.append([row])` → confirm.
+- **Retrieval** — extract `{intent, time_range, category}` → `ledger.read_all()` → reduce → answer.
+- **Correction** — `/undo` → `ledger.delete_last()`; `/edit` → `ledger.update_last({...})`.
+
+The `LedgerBackend` Protocol (in `expense_tracker/ledger/base.py`) is the only
+seam in the codebase that knows where data physically lives.  Two editions
+implement it today; new editions (e.g. SQLite-on-disk, Notion, Airtable) would
+slot in by adding one new file.
 
 ## Tech choices
 
@@ -690,7 +701,10 @@ expense-tracker-bot/
 8b. **Healthcheck** — `expense --healthcheck` will ping LLM, FX, Sheets, and Telegram in one shot.
 8c. **Log rotation** — built-in size-based rotation for `logs/llm_calls.jsonl` and `logs/conversations.jsonl`.
 8d. **Multi-turn clarification** — when intent classifier returns `unclear`, ask one targeted follow-up question instead of giving up.
-9. **Hosting on Oracle Cloud Free Tier** — `deploy/oracle/` bundle: step-by-step `DEPLOY.md` runbook, idempotent `setup.sh` bootstrap, `update.sh` for ongoing deploys, and a hardened `expense-bot.service` systemd unit (auto-restart on crash, survives reboot, journald log streaming, 512 MB memory cap, `ProtectHome=read-only`). Long-polling Telegram = no inbound port / TLS / domain needed. **(runbook ready — pending OCI signup)**
+9. **Hosting on Oracle Cloud Free Tier** — two parallel deploy bundles, both targeting free Oracle ARM VMs (or any Ubuntu host):
+   - [`deploy/sheets-edition/`](./deploy/sheets-edition/) — Sheets bot under systemd: step-by-step `DEPLOY.md` runbook, idempotent `setup.sh`, `update.sh`, hardened `expense-bot.service` (`ProtectHome=read-only`, 512 MB cap, auto-restart).  Long-polling Telegram = no inbound port / TLS needed.
+   - [`deploy/nocodb-edition/`](./deploy/nocodb-edition/) — Postgres + NocoDB stack: docker-compose for Postgres 16 + NocoDB UI on the same VM, `setup.sh` that generates random secrets and runs Alembic migrations, `expense-bot.service` that waits for Postgres to come healthy before starting.
+10. **Two-edition storage architecture** — `LedgerBackend` Protocol in `src/expense_tracker/ledger/base.py`; Sheets adapter wraps the existing gspread code; `PostgresLedgerBackend` is a SQLAlchemy 2.0 typed implementation with soft-delete, full audit log (`transactions_audit_log` table with old/new JSON snapshots), and cross-dialect support (Postgres in prod, SQLite in tests).  Alembic migrations under `src/expense_tracker/ledger/nocodb/migrations/`.  CLI: `expense --init-postgres`, `expense --postgres-health`, `expense --migrate-sheets-to-postgres` for one-shot data move.
 
 ## Running it
 

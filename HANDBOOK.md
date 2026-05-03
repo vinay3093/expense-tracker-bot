@@ -497,9 +497,13 @@ The bot starts long-polling. From your phone:
 
 **Important caveat:** the bot only runs while `expense --telegram` is
 running on the laptop. Close the laptop, the bot stops. To run 24/7,
-deploy to Oracle Cloud Free Tier — full runbook in
-[`deploy/oracle/DEPLOY.md`](./deploy/oracle/DEPLOY.md) (see §16
-Roadmap).
+deploy to Oracle Cloud Free Tier — pick the deploy bundle that
+matches your storage edition:
+
+* **Sheets edition** (default): [`deploy/sheets-edition/DEPLOY.md`](./deploy/sheets-edition/DEPLOY.md)
+* **Postgres + NocoDB edition**: [`deploy/nocodb-edition/DEPLOY.md`](./deploy/nocodb-edition/DEPLOY.md)
+
+See §16 Roadmap (Step 9 + 10) for the architecture context.
 
 ---
 
@@ -604,13 +608,18 @@ expense-tracker-bot/
 │       ├── auth.py             ← parse_allowed_users + Authorizer (no SDK imports)
 │       ├── bot.py              ← MessageProcessor + CorrectionProcessor + SummaryProcessor + handler factories
 │       └── factory.py          ← build_application + run_polling
-├── deploy/oracle/            ← Oracle Cloud Free Tier deploy bundle (Step 9)
-│   ├── DEPLOY.md               ← step-by-step runbook (signup -> systemd-managed bot)
-│   ├── README.md               ← TL;DR + folder index
-│   ├── setup.sh                ← idempotent first-time bootstrap on the VM
-│   ├── update.sh               ← git pull + reinstall + restart helper
-│   └── expense-bot.service     ← hardened systemd unit (auto-restart, journald, ProtectHome)
-└── tests/                    ← 476 tests, all offline
+├── deploy/                   ← two deploy bundles, both for Oracle Free Tier (Steps 9, 10c)
+│   ├── sheets-edition/         ← Google Sheets edition under systemd
+│   │   ├── DEPLOY.md           ← step-by-step runbook (signup -> systemd-managed bot)
+│   │   ├── README.md / setup.sh / update.sh / expense-bot.service
+│   ├── nocodb-edition/         ← Postgres + NocoDB edition under docker-compose + systemd
+│   │   ├── DEPLOY.md           ← step-by-step runbook (NocoDB UI + Alembic migrations)
+│   │   ├── README.md           ← architecture diagram + TL;DR
+│   │   ├── docker-compose.yml  ← postgres:16-alpine + nocodb:latest, named volumes, healthchecks
+│   │   ├── setup.sh            ← idempotent bootstrap (Docker + venv + secrets + alembic + systemd)
+│   │   ├── update.sh           ← git pull + reinstall + alembic + restart
+│   │   └── expense-bot.service ← waits for Postgres before starting
+└── tests/                    ← 508 tests, all offline (including SQLite-backed Postgres tests)
     ├── conftest.py             ← isolated_env / fake_llm fixtures
     └── test_*.py               ← One per module, plus integration tests
 ```
@@ -1279,6 +1288,107 @@ Transactions tab** — back up first if the existing rows matter.
 
 ---
 
+## 14b. The two storage editions (Step 10)
+
+The bot ships with two completely interchangeable storage backends.
+Everything *above* the storage layer — chat, LLM, currency
+conversion, retrieval, summaries, Telegram, undo / edit — is the
+same code, exercised by the same tests.
+
+### Picking an edition
+
+| You want ...                                         | Pick                  |
+|------------------------------------------------------|-----------------------|
+| Zero infra (just a Google account)                   | **Sheets** (default)  |
+| Spreadsheet-style sharing with non-technical family  | **Sheets**            |
+| To never run a server                                | **Sheets**            |
+| Long-term scale (tens of thousands of rows)          | **NocoDB / Postgres** |
+| Real types + indexes, instant filters / aggregations | **NocoDB / Postgres** |
+| A full audit trail of every change                   | **NocoDB / Postgres** |
+| Soft-delete (recoverable `/undo`)                    | **NocoDB / Postgres** |
+| Webhooks / SQL access for downstream tools           | **NocoDB / Postgres** |
+
+You can run **both** in parallel during a transition — same
+Telegram bot, two `.env` files, swap with `STORAGE_BACKEND=...`.
+A one-shot CLI command (`expense --migrate-sheets-to-postgres`)
+copies existing rows over when you're ready to commit.
+
+### How the abstraction works
+
+```
+            ┌─────────────────────────────────────────┐
+            │   chat / LLM / pipeline / Telegram      │
+            └─────────────────────┬───────────────────┘
+                                  │ depends on
+                                  ▼
+                  ┌──────────────────────────┐
+                  │ LedgerBackend (Protocol) │   src/expense_tracker/ledger/base.py
+                  └──┬────────────────────┬──┘
+                     │                    │
+                     ▼                    ▼
+        ┌─────────────────────┐  ┌────────────────────────┐
+        │ SheetsLedgerBackend │  │ PostgresLedgerBackend  │
+        │  (gspread + cache)  │  │  (SQLAlchemy 2.0)      │
+        └─────────────────────┘  └────────────────────────┘
+```
+
+A factory (`expense_tracker/ledger/factory.py`) builds the right
+implementation based on `settings.STORAGE_BACKEND`.  Every pipeline
+class accepts a `LedgerBackend` in its constructor — they don't
+know which one they got, and don't care.
+
+### Postgres edition: schema at a glance
+
+Two tables, defined as SQLAlchemy 2.0 typed `Mapped` columns in
+`src/expense_tracker/ledger/nocodb/models.py`:
+
+* **`transactions`** — the master ledger.  One row per logged
+  expense.  Columns mirror the universal `TransactionRow` shape
+  (date / day / month / year / category / note / vendor / amount /
+  currency / amount_usd / fx_rate / source / trace_id / timestamp /
+  deleted_at).  Soft-deleted (`deleted_at IS NOT NULL`) rather than
+  physically removed.
+* **`transactions_audit_log`** — append-only history of every
+  insert / update / delete on `transactions`.  Carries the
+  before/after JSON payload (`old_values` / `new_values`), the
+  actor (`chat` / `cli` / `migration`), and the wall-clock time.
+
+Indexes are tuned for the chat pipeline's actual queries:
+
+* `(date)` — period queries (summary, retrieval).
+* `(category, date)` — category drill-downs.
+* `(year, month)` — monthly + YTD reports.
+* `(deleted_at) WHERE deleted_at IS NULL` — partial index on the
+  hot read path (Postgres only; SQLite falls back gracefully).
+
+### Postgres edition: lifecycle
+
+1. **Bootstrap once.**  Either:
+   * `expense --init-postgres` (calls `Base.metadata.create_all`,
+     fine for personal use), or
+   * `alembic -c alembic.ini upgrade head` (the production path,
+     runs every migration in order with version tracking).
+2. **Schema changes.**  Edit the SQLAlchemy models, then:
+   ```bash
+   alembic -c alembic.ini revision --autogenerate -m "what changed"
+   # review the generated file in src/expense_tracker/ledger/nocodb/migrations/versions/
+   alembic -c alembic.ini upgrade head
+   ```
+3. **Backups.**  `docker exec expense-postgres pg_dump -U expense expense > backup.sql`.
+   Cron it for daily, rotate weekly.
+4. **Migrate from Sheets.**  Once when switching:
+   `expense --migrate-sheets-to-postgres` (refuses to run twice
+   unless you pass `--migrate-force`).
+
+### Tests
+
+The Postgres edition is fully covered by 36 hermetic tests
+(`tests/test_ledger_postgres.py` + `tests/test_ledger_postgres_alembic.py`)
+that run against SQLite-in-memory.  No Postgres server required for
+CI.
+
+---
+
 ## 15. Maintenance — backup, year rollover, schema migration
 
 ### Backups
@@ -1340,7 +1450,10 @@ to append a new column at the end and the existing rows stay valid
 | 8b | `--healthcheck`: ping LLM, FX, Sheets, Telegram in one shot | next |
 | 8c | Built-in size-based rotation for `logs/llm_calls.jsonl` + `logs/conversations.jsonl` | next |
 | 8d | Multi-turn clarification (when intent is `unclear`) | pending |
-| 9 | Hosting on Oracle Cloud Free Tier — deploy bundle (`deploy/oracle/`: `DEPLOY.md`, `setup.sh`, `update.sh`, `expense-bot.service`) | runbook ready, awaiting OCI signup |
+| 9 | Hosting on Oracle Cloud Free Tier — `deploy/sheets-edition/` bundle (`DEPLOY.md`, `setup.sh`, `update.sh`, `expense-bot.service`) | runbook ready, awaiting OCI signup |
+| 10a | `LedgerBackend` Protocol + universal data shapes (`TransactionRow`, `LedgerRow`, `LastRow`, `SkippedRow`, `LedgerInspection`, `BackendHealth`, `PeriodInfo`) — chat pipeline now backend-agnostic | done |
+| 10b | Postgres + NocoDB edition: SQLAlchemy 2.0 typed models with soft-delete + audit log; `PostgresLedgerBackend` adapter; Alembic migrations; `expense --init-postgres / --postgres-health / --migrate-sheets-to-postgres` CLI commands | done |
+| 10c | `deploy/nocodb-edition/` bundle (docker-compose for Postgres+NocoDB, `setup.sh` with random secrets + alembic, `expense-bot.service` with Postgres ready-wait, runbook with NocoDB UI walkthrough) | done |
 
 ### What "sellable" would require (out of current scope)
 
