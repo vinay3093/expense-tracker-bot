@@ -43,10 +43,21 @@ dependencies = [
 openai = ["openai>=1.40,<2.0"]
 anthropic = ["anthropic>=0.40,<1.0"]
 telegram = ["python-telegram-bot>=21.6,<22.0"]
+# Postgres + NocoDB edition (Step 10b): SQLAlchemy 2.0 typed models +
+# psycopg3 driver + Alembic migrations.  Install with:
+#   pip install -e ".[nocodb]"
+nocodb = [
+    "sqlalchemy>=2.0,<3.0",
+    "psycopg[binary]>=3.1,<4.0",
+    "alembic>=1.13,<2.0",
+]
 all = [
     "openai>=1.40,<2.0",
     "anthropic>=0.40,<1.0",
     "python-telegram-bot>=21.6,<22.0",
+    "sqlalchemy>=2.0,<3.0",
+    "psycopg[binary]>=3.1,<4.0",
+    "alembic>=1.13,<2.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -57,6 +68,10 @@ dev = [
     # Bundles a pandoc binary so `python scripts/build_handbook.py`
     # works without a system-wide pandoc install.
     "pypandoc-binary>=1.13",
+    # Postgres edition stack — also installed in dev so tests can run
+    # the SQLite-in-memory variant of PostgresLedgerBackend.
+    "sqlalchemy>=2.0,<3.0",
+    "alembic>=1.13,<2.0",
 ]
 
 [project.scripts]
@@ -68,7 +83,7 @@ packages = ["src/expense_tracker"]
 # Bundle category / sheet-format YAML files into the wheel.
 [tool.hatch.build.targets.wheel.force-include]
 "src/expense_tracker/extractor/data" = "expense_tracker/extractor/data"
-"src/expense_tracker/sheets/data" = "expense_tracker/sheets/data"
+"src/expense_tracker/ledger/sheets/data" = "expense_tracker/ledger/sheets/data"
 
 [tool.ruff]
 line-length = 100
@@ -97,4 +112,9 @@ filterwarnings = [
     "error",
     # pydantic-settings deprecation warnings from upstream — not our problem
     "ignore::DeprecationWarning:pydantic.*",
+    # Alembic 1.18+ emits a DeprecationWarning the first time a
+    # Config object is read without `path_separator`.  Our alembic.ini
+    # *does* set it, but Alembic still re-reads the option from a
+    # raw RawConfigParser and warns once.  Out of our hands.
+    "ignore::DeprecationWarning:alembic.*",
 ]

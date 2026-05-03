@@ -224,6 +224,55 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ─── Postgres + NocoDB edition (Step 10b) ──────────────────────────
+    g_pg = p.add_argument_group(
+        "Postgres edition",
+        description=(
+            "Operate on the Postgres + NocoDB ledger backend.  Active when "
+            "STORAGE_BACKEND=nocodb (or 'postgres') in your .env, and "
+            "DATABASE_URL points at a reachable database.  These commands "
+            "let you bootstrap a fresh database and migrate existing rows "
+            "from the Sheets edition."
+        ),
+    )
+    g_pg.add_argument(
+        "--init-postgres",
+        action="store_true",
+        help=(
+            "Create the transactions + audit_log tables in the database "
+            "named by DATABASE_URL.  Idempotent — safe to re-run.  After "
+            "this, the bot can write to Postgres."
+        ),
+    )
+    g_pg.add_argument(
+        "--postgres-health",
+        action="store_true",
+        help=(
+            "Run a quick health check against DATABASE_URL — connectivity, "
+            "schema presence, active row count.  Use after --init-postgres "
+            "to confirm everything is wired."
+        ),
+    )
+    g_pg.add_argument(
+        "--migrate-sheets-to-postgres",
+        action="store_true",
+        help=(
+            "One-shot data move: read every active row from the Sheets "
+            "edition's Transactions tab and insert it into the Postgres "
+            "ledger.  Idempotent on a clean database; refuses if the "
+            "Postgres ledger already contains rows."
+        ),
+    )
+    g_pg.add_argument(
+        "--migrate-force",
+        action="store_true",
+        help=(
+            "Skip the 'destination is empty' safety check on "
+            "--migrate-sheets-to-postgres.  Use only when you know what "
+            "you're doing — duplicates the source rows otherwise."
+        ),
+    )
+
     # ─── Telegram front-end ────────────────────────────────────────────
     g_tg = p.add_argument_group(
         "Telegram",
@@ -912,6 +961,174 @@ def _cmd_telegram(*, fake: bool) -> int:
 
 # ─── Dispatch ──────────────────────────────────────────────────────────
 
+# ─── Postgres edition commands ─────────────────────────────────────────
+
+
+def _cmd_init_postgres() -> int:
+    """Create the schema in the database named by DATABASE_URL."""
+    cfg = get_settings()
+    try:
+        from .ledger.nocodb.adapter import PostgresLedgerBackend
+        from .ledger.nocodb.exceptions import PostgresLedgerError
+        from .ledger.nocodb.factory import get_engine
+    except ImportError as exc:
+        print(
+            f"\n[postgres deps missing] {exc}\n"
+            "Install with: pip install -e \".[nocodb]\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        engine = get_engine(cfg)
+    except PostgresLedgerError as exc:
+        print(f"\n[postgres config] {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Engine   : {engine.url}")
+    backend = PostgresLedgerBackend(engine=engine, actor="cli")
+    print("Creating tables: transactions, transactions_audit_log ...")
+    try:
+        backend.init_storage()
+    except PostgresLedgerError as exc:
+        print(f"\n[postgres error] {exc}", file=sys.stderr)
+        return 3
+    print(f"Schema present : {backend.schema_present()}")
+    print(f"Active rows    : {backend.count_active()}")
+    print("\nReady.  Set STORAGE_BACKEND=nocodb in your .env and the bot will")
+    print("write here from now on.  Telegram, /chat, /summary, /undo, /edit")
+    print("all work unchanged.")
+    return 0
+
+
+def _cmd_postgres_health() -> int:
+    cfg = get_settings()
+    try:
+        from .ledger.nocodb.adapter import PostgresLedgerBackend
+        from .ledger.nocodb.exceptions import PostgresLedgerError
+        from .ledger.nocodb.factory import get_engine
+    except ImportError as exc:
+        print(
+            f"\n[postgres deps missing] {exc}\n"
+            "Install with: pip install -e \".[nocodb]\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        engine = get_engine(cfg)
+    except PostgresLedgerError as exc:
+        print(f"\n[postgres config] {exc}", file=sys.stderr)
+        return 2
+
+    backend = PostgresLedgerBackend(engine=engine, actor="cli")
+    health = backend.health_check()
+    print(f"Engine   : {engine.url}")
+    print(f"Backend  : {health.backend}")
+    print(f"OK       : {health.ok}")
+    print(f"Latency  : {health.latency_ms:.1f} ms")
+    print(f"Detail   : {health.detail}")
+    schema_msg = "present" if backend.schema_present() else "MISSING — run --init-postgres"
+    print(f"Schema   : {schema_msg}")
+    if backend.schema_present():
+        print(f"Active   : {backend.count_active()} rows")
+    return 0 if health.ok else 3
+
+
+def _cmd_migrate_sheets_to_postgres(*, force: bool) -> int:
+    """Copy every active row from the Sheets ledger into the Postgres ledger."""
+    cfg = get_settings()
+    try:
+        from .ledger.nocodb.adapter import PostgresLedgerBackend
+        from .ledger.nocodb.exceptions import PostgresLedgerError
+        from .ledger.nocodb.factory import get_engine
+        from .ledger.sheets import SheetsError
+        from .ledger.sheets.adapter import SheetsLedgerBackend
+        from .ledger.sheets.factory import get_sheets_backend
+        from .ledger.sheets.format import get_sheet_format
+    except ImportError as exc:
+        print(f"\n[deps missing] {exc}", file=sys.stderr)
+        return 2
+
+    print("Source   : Google Sheets edition")
+    try:
+        sheets_ledger = SheetsLedgerBackend(
+            backend=get_sheets_backend(cfg, fake=False),
+            sheet_format=get_sheet_format(),
+        )
+    except SheetsError as exc:
+        print(f"\n[sheets config] {exc}", file=sys.stderr)
+        return 2
+
+    print("Destination : Postgres edition")
+    try:
+        engine = get_engine(cfg)
+        pg_ledger = PostgresLedgerBackend(engine=engine, actor="migration")
+    except PostgresLedgerError as exc:
+        print(f"\n[postgres config] {exc}", file=sys.stderr)
+        return 2
+
+    if not pg_ledger.schema_present():
+        print(
+            "\n[postgres] schema not present — run `expense --init-postgres` first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    existing = pg_ledger.count_active()
+    if existing > 0 and not force:
+        print(
+            f"\n[refusing] destination already holds {existing} active row(s). "
+            "Pass --migrate-force to copy anyway (will create duplicates).",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        inspection = sheets_ledger.read_all(collect_skipped_detail=True)
+    except SheetsError as exc:
+        print(f"\n[sheets read failed] {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Source rows  : {len(inspection.parsed)} parsed, "
+          f"{len(inspection.skipped)} skipped")
+    if inspection.skipped:
+        print("\nSkipped rows (first 5):")
+        for s in inspection.skipped[:5]:
+            print(f"  row {s.row_index}: {s.reason}")
+
+    if not inspection.parsed:
+        print("\nNothing to migrate — Sheets ledger is empty.")
+        return 0
+
+    # Project LedgerRow (read shape) -> TransactionRow (write shape).
+    from .ledger.base import TransactionRow
+    write_rows = [
+        TransactionRow(
+            date=r.date, day=r.day, month=r.month, year=r.year,
+            category=r.category, note=r.note, vendor=r.vendor,
+            amount=r.amount, currency=r.currency,
+            amount_usd=r.amount_usd, fx_rate=r.fx_rate,
+            source=r.source or "migration", trace_id=r.trace_id,
+            timestamp=r.timestamp,
+        )
+        for r in inspection.parsed
+    ]
+
+    print(f"\nWriting {len(write_rows)} rows to Postgres ...")
+    try:
+        ids = pg_ledger.append(write_rows)
+    except PostgresLedgerError as exc:
+        print(f"\n[postgres write failed] {exc}", file=sys.stderr)
+        return 3
+
+    print(f"Wrote rows id={min(ids)}..{max(ids)}")
+    print(f"Active rows in Postgres now : {pg_ledger.count_active()}")
+    print("\nMigration complete.  Flip STORAGE_BACKEND=nocodb in .env to switch")
+    print("the chat pipeline to read+write from Postgres.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     args = _build_parser().parse_args(argv)
 
@@ -964,6 +1181,14 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
             category=args.edit_category,
         ))
 
+    # Postgres edition.
+    if args.init_postgres:
+        sys.exit(_cmd_init_postgres())
+    if args.postgres_health:
+        sys.exit(_cmd_postgres_health())
+    if args.migrate_sheets_to_postgres:
+        sys.exit(_cmd_migrate_sheets_to_postgres(force=args.migrate_force))
+
     # Telegram bot.
     if args.telegram:
         sys.exit(_cmd_telegram(fake=args.fake))
@@ -978,6 +1203,7 @@ def main(argv: list[str] | None = None) -> NoReturn:  # pragma: no cover
     print("Chat    : --chat \"spent 40 on coffee yesterday\" | --summary {week|month|year}")
     print("Fix     : --undo | --edit-amount 50 | --edit-category Groceries")
     print("Telegram: --telegram        (run the bot)")
+    print("Postgres: --init-postgres | --postgres-health | --migrate-sheets-to-postgres")
     print("Add --fake to any Sheets / chat / telegram command to run offline.")
     sys.exit(0)
 
