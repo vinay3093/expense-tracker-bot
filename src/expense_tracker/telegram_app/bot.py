@@ -546,12 +546,39 @@ def make_text_handler(processor: MessageProcessor):
         user_id = user.id if user is not None else None
 
         await _send_typing(update)
-        result = await asyncio.to_thread(
-            processor.process,
-            user_id=user_id,
-            text=msg.text,
-        )
-        await _reply_safely(update, result.reply_text)
+        # Catch the entire pipeline.  Sheets quotas (429), Groq
+        # timeouts, FX-cache write failures, and even bugs in our
+        # extractor all surface as plain exceptions from
+        # ``processor.process`` — without this guard they'd bubble
+        # up to PTB's polling loop, which on v21 has been observed
+        # to silently deadlock on subsequent updates.  The global
+        # error_handler in factory.py is the second line of
+        # defence; this is the first, and gives the user a more
+        # actionable reply because we know the message context.
+        try:
+            result = await asyncio.to_thread(
+                processor.process,
+                user_id=user_id,
+                text=msg.text,
+            )
+            await _reply_safely(update, result.reply_text)
+        except Exception as exc:
+            _log.exception(
+                "Pipeline raised on user %s message %r — replying "
+                "with apology, polling loop preserved.",
+                user_id, msg.text[:80],
+            )
+            # Friendly user-facing message; stash the type so the
+            # operator can grep logs to correlate.
+            await _reply_safely(
+                update,
+                (
+                    "Sorry — something went wrong logging that just now "
+                    f"({type(exc).__name__}). The bot is still alive — "
+                    "try sending it again in 60 seconds. If it keeps "
+                    "failing, check Render container logs."
+                ),
+            )
 
     return handle_text
 

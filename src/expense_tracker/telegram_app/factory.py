@@ -169,6 +169,43 @@ def build_application(
     )
 
     app = ApplicationBuilder().token(token).build()
+
+    # Global error handler — if any handler raises (e.g. Sheets 429,
+    # Groq timeout, FX-cache write failure), PTB calls this BEFORE
+    # propagating the exception to the polling loop.  Without it, an
+    # uncaught handler exception under PTB v21 can corrupt the
+    # Application's asyncio state and the polling loop dies silently
+    # — exactly the "container alive, no Telegram replies, no log
+    # activity" symptom we hit twice tonight on Render.
+    #
+    # The handler logs the traceback at ERROR (so it always shows in
+    # container logs) and best-effort replies to the user with a
+    # friendly message.  Reply failures are swallowed because the
+    # most likely cause is the very same outage that killed the
+    # primary handler — no point in raising in our raise-handler.
+    async def _on_handler_error(update: object, context: object) -> None:
+        import traceback
+        err = getattr(context, "error", None)
+        _log.error(
+            "Telegram handler raised %s — polling loop preserved.\n%s",
+            type(err).__name__ if err else "<unknown>",
+            "".join(traceback.format_exception(err)) if err else "(no traceback)",
+        )
+        # Best-effort user notification — only if we have an update
+        # object that looks like a message we can reply to.
+        try:
+            from telegram import Update
+            if isinstance(update, Update) and update.effective_message is not None:
+                await update.effective_message.reply_text(
+                    "Sorry — something went wrong handling that message. "
+                    "If this keeps happening, ping me /start to verify the "
+                    "bot is responsive."
+                )
+        except Exception:
+            pass
+
+    app.add_error_handler(_on_handler_error)
+
     app.add_handler(CommandHandler("start", make_start_handler()))
     app.add_handler(CommandHandler("help", make_start_handler()))
     app.add_handler(CommandHandler("whoami", make_whoami_handler()))
