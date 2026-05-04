@@ -15,7 +15,7 @@ short_description: Personal Telegram bot that logs expenses into Google Sheets.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-multi--stage-2496ED?logo=docker&logoColor=white)](./Dockerfile)
-[![Hugging Face Spaces](https://img.shields.io/badge/24%2F7%20deploy-Hugging%20Face%20Spaces-FFD21E?logo=huggingface&logoColor=black)](./deploy/huggingface-edition/DEPLOY.md)
+[![Render](https://img.shields.io/badge/24%2F7%20deploy-Render%20Free-46E3B7?logo=render&logoColor=white)](./deploy/render-edition/DEPLOY.md)
 
 A personal project: chat with a bot ("today I spent 40 bucks on food") and have it
 silently log the expense into a typed ledger.  The same bot also answers retrieval
@@ -29,9 +29,13 @@ and rolls up periods ("how am I doing this week vs last week?").
 >   a Google Sheet shaped like a manual monthly tracker (row per day,
 >   column per category, formula-driven totals + YTD).  Zero infra.
 >   Two deploy targets:
->   * **Hugging Face Spaces (free, 24/7, recommended starter):**
->     [`deploy/huggingface-edition/`](./deploy/huggingface-edition/)
->     — Docker, push-to-deploy, GitHub Actions cron keep-alive.
+>   * **Render Free (free, 24/7, recommended starter):**
+>     [`deploy/render-edition/`](./deploy/render-edition/)
+>     — Docker, push-to-deploy, GitHub Actions cron keep-alive every 14 min.
+>     (We previously targeted Hugging Face Spaces but moved off because
+>     HF blocks all outbound traffic to `api.telegram.org`.  The HF
+>     bundle is kept in [`deploy/huggingface-edition/`](./deploy/huggingface-edition/)
+>     for non-Telegram fork authors.)
 >   * **Oracle Cloud Free (self-hosted):**
 >     [`deploy/sheets-edition/`](./deploy/sheets-edition/) — systemd unit on a free VM.
 > * **NocoDB / Postgres edition** (`STORAGE_BACKEND=nocodb`) — writes
@@ -77,8 +81,9 @@ expense-tracker-bot/
 ├── tests/                       # ~520 hermetic tests, one file per module under test
 │
 ├── deploy/                      # one self-contained recipe per host + edition
-│   ├── huggingface-edition/       ─ Hugging Face Spaces (free, recommended 24/7 host)
-│   ├── sheets-edition/            ─ Oracle Cloud Free + systemd
+│   ├── render-edition/            ─ Render Free (recommended 24/7 host — Telegram works)
+│   ├── huggingface-edition/       ─ Hugging Face Spaces (kept for fork authors; HF blocks Telegram)
+│   ├── sheets-edition/            ─ Oracle Cloud Free + systemd (self-hosted VM)
 │   └── nocodb-edition/            ─ Oracle Cloud Free + docker-compose (Postgres + NocoDB)
 │
 ├── docs/                        # all human-facing documentation
@@ -776,12 +781,13 @@ expense-tracker-bot/
    - [`deploy/sheets-edition/`](./deploy/sheets-edition/) — Sheets bot under systemd: step-by-step `DEPLOY.md` runbook, idempotent `setup.sh`, `update.sh`, hardened `expense-bot.service` (`ProtectHome=read-only`, 512 MB cap, auto-restart).  Long-polling Telegram = no inbound port / TLS needed.
    - [`deploy/nocodb-edition/`](./deploy/nocodb-edition/) — Postgres + NocoDB stack: docker-compose for Postgres 16 + NocoDB UI on the same VM, `setup.sh` that generates random secrets and runs Alembic migrations, `expense-bot.service` that waits for Postgres to come healthy before starting.
 
-10. **Hosting on Hugging Face Spaces (free, 24/7)** — the recommended path when Oracle capacity is unavailable.  Bundle at [`deploy/huggingface-edition/`](./deploy/huggingface-edition/):
-    - Multi-stage [`Dockerfile`](./Dockerfile) — Python 3.11 slim, builder/runtime split, non-root user, tini PID-1, `$PORT`-aware so the same image runs on HF, Render, Koyeb.
+10. **Hosting on Render Free (free, 24/7)** — the recommended path when Oracle capacity is unavailable.  Bundle at [`deploy/render-edition/`](./deploy/render-edition/):
+    - Multi-stage [`Dockerfile`](./Dockerfile) — Python 3.11 slim, builder/runtime split, non-root user, tini PID-1, `$PORT`-aware so the same image runs on Render, Koyeb, Fly, Hugging Face.
     - Tiny in-process HTTP health server (`src/expense_tracker/telegram_app/health_server.py`) so platform probes + cron keep-alive pings succeed.
     - Env-var-based service-account credentials (`GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT`) — no file upload needed; the JSON is materialised to a `chmod 600` temp file at startup.
-    - `git push huggingface main` push-to-deploy; secrets in HF's encrypted Secrets store.
-    - GitHub Actions cron at [`.github/workflows/keep-hf-alive.yml`](./.github/workflows/keep-hf-alive.yml) hits `/health` daily so the 48-hour idle timer never fires.
+    - One-click [`render.yaml`](./deploy/render-edition/render.yaml) Blueprint or 5-minute manual UI flow; secrets pasted into Render's encrypted env-var store.
+    - GitHub Actions cron at [`.github/workflows/keep-render-alive.yml`](./.github/workflows/keep-render-alive.yml) pings `/health` every 14 minutes so the 15-minute idle spin-down timer never fires.
+    - Hugging Face Spaces bundle ([`deploy/huggingface-edition/`](./deploy/huggingface-edition/)) is kept around for non-Telegram fork authors but is non-functional for this repo because HF blocks `api.telegram.org` outbound.
 10. **Two-edition storage architecture** — `LedgerBackend` Protocol in `src/expense_tracker/ledger/base.py`; Sheets adapter wraps the existing gspread code; `PostgresLedgerBackend` is a SQLAlchemy 2.0 typed implementation with soft-delete, full audit log (`transactions_audit_log` table with old/new JSON snapshots), and cross-dialect support (Postgres in prod, SQLite in tests).  Alembic migrations under `src/expense_tracker/ledger/nocodb/migrations/`.  CLI: `expense --init-postgres`, `expense --postgres-health`, `expense --migrate-sheets-to-postgres` for one-shot data move.
 
 ## Running it

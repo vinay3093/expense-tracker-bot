@@ -1,0 +1,139 @@
+# Pings the Render Free web service every 14 minutes so its 15-minute
+# idle-spin-down timer never fires.  Result: the Telegram bot stays
+# awake 24/7 without anyone touching anything.
+#
+# Why 14 and not 15
+# -----------------
+# Render starts the spin-down timer on the *last* inbound HTTP request
+# and spins down at +15 min.  A ping at +14 min resets the timer to
+# zero with one minute of safety margin against GitHub Actions
+# scheduling jitter (Actions cron is "best effort, not guaranteed").
+# More frequent than necessary would just waste worker minutes.
+#
+# Free-tier resource cost (per run)
+# ---------------------------------
+#   * runtime: ~3 seconds
+#   * GitHub Actions free quota for public repos: unlimited
+#     (private repos: 14-min cadence = ~3,100 runs/month × 3s ≈ 155
+#      minutes — well under the 2,000 min/month free quota)
+#   * Bandwidth: ~1 KB egress per run
+#
+# Setup (one-time)
+# ----------------
+#   1. Add a repo VARIABLE (not secret — it's just a URL) named
+#      RENDER_SERVICE_URL whose value is the *.onrender.com URL of
+#      your service, e.g.:
+#          https://expense-bot.onrender.com
+#      (NOT  https://dashboard.render.com/web/srv-xxxxx
+#       — that's the dashboard page, not the container.)
+#      Settings → Secrets and variables → Actions → "Variables" tab
+#      → "New repository variable".
+#   2. (Optional) Add SECRETS  KEEPALIVE_TG_BOT_TOKEN  and
+#      KEEPALIVE_TG_CHAT_ID  to receive a Telegram alert when a ping
+#      fails.  Otherwise the job just goes red in the Actions tab.
+#
+# Manual trigger:  Actions tab → "Keep Render service awake"
+#                  → Run workflow
+# Cron:            every 14 minutes, on the :00 :14 :28 :42 :56
+#                  marks of each hour.
+
+name: Keep Render service awake
+
+on:
+  schedule:
+    # GitHub Actions cron uses the standard 5-field syntax.  "*/14"
+    # gives us :00 :14 :28 :42 :56.  Slightly off-pattern (the gap
+    # between :56 and :00 is only 4 min, the gap between :42 and :56
+    # is 14 min) but the longest gap is still <=15 min so we never
+    # miss the spin-down window.
+    - cron: "*/14 * * * *"
+  workflow_dispatch:  # manual trigger from the UI
+
+# Don't run two keep-alive jobs in parallel — pointless and wastes
+# a worker slot if a previous run is still going.
+concurrency:
+  group: keep-render-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate RENDER_SERVICE_URL is set
+        env:
+          RENDER_SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
+        run: |
+          if [ -z "${RENDER_SERVICE_URL}" ]; then
+            echo "::error::RENDER_SERVICE_URL repository variable is not set."
+            echo "Go to repo Settings → Secrets and variables → Actions → 'Variables' tab → 'New repository variable'."
+            echo "Name: RENDER_SERVICE_URL"
+            echo "Value: https://<your-service-name>.onrender.com  (no trailing slash)"
+            exit 1
+          fi
+          # Strip a trailing slash defensively so /health doesn't
+          # become //health, which Render's router rejects with 404.
+          clean="${RENDER_SERVICE_URL%/}"
+          echo "Will ping: ${clean}/health"
+          echo "RENDER_HEALTH_URL=${clean}/health" >> "$GITHUB_ENV"
+
+      - name: Wake the service (with retry + cold-start tolerance)
+        run: |
+          set -euo pipefail
+
+          # If the service DID fall asleep (we missed the window or
+          # GitHub Actions was delayed), the first request triggers
+          # a cold start (~30-60 s on Render Free).  We retry up to
+          # 6 times with a long max-time so we wait through the boot
+          # rather than failing on the first connection.
+          for attempt in 1 2 3 4 5 6; do
+            echo "─── attempt ${attempt}/6 ───"
+
+            # --max-time covers the entire request including TLS +
+            # cold start; --connect-timeout is just the TCP handshake.
+            http_code=$(curl \
+              --silent --show-error \
+              --output /tmp/render-ping.body \
+              --write-out "%{http_code}" \
+              --connect-timeout 15 \
+              --max-time 90 \
+              --retry 0 \
+              "${RENDER_HEALTH_URL}" \
+            ) || http_code="000"
+
+            body=$(head -c 200 /tmp/render-ping.body 2>/dev/null || true)
+            echo "  status: ${http_code}"
+            echo "  body:   ${body}"
+
+            if [ "${http_code}" = "200" ]; then
+              echo "::notice::Service is awake (took ${attempt} attempt(s))."
+              exit 0
+            fi
+
+            if [ "${attempt}" -lt 6 ]; then
+              echo "  retrying in 20s..."
+              sleep 20
+            fi
+          done
+
+          echo "::error::Service did not respond after 6 attempts.  Check Render logs."
+          exit 1
+
+      - name: Notify Telegram on failure (optional)
+        # Only fire if both notification env vars are set AND a
+        # previous step failed.  Uses dedicated KEEPALIVE_* secrets
+        # so the bot's main TELEGRAM_BOT_TOKEN doesn't have to be
+        # exposed to the cron worker.  You CAN reuse the bot's main
+        # token here; just paste it into KEEPALIVE_TG_BOT_TOKEN too.
+        if: failure() && env.KEEPALIVE_TG_BOT_TOKEN != '' && env.KEEPALIVE_TG_CHAT_ID != ''
+        env:
+          KEEPALIVE_TG_BOT_TOKEN: ${{ secrets.KEEPALIVE_TG_BOT_TOKEN }}
+          KEEPALIVE_TG_CHAT_ID: ${{ secrets.KEEPALIVE_TG_CHAT_ID }}
+          RENDER_SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
+        run: |
+          curl -fsS -X POST \
+            "https://api.telegram.org/bot${KEEPALIVE_TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${KEEPALIVE_TG_CHAT_ID}" \
+            --data-urlencode "text=Render keep-alive failed for ${RENDER_SERVICE_URL} — service may have spun down. Check the Render dashboard." \
+            > /dev/null

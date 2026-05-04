@@ -1,45 +1,60 @@
 # WAKE UP — morning checklist
 
-You went to sleep with the NocoDB / Postgres edition fully wired
-**and** the Hugging Face Spaces 24/7 hosting bundle ready to push.
-Here's exactly what to do today, in priority order.
+You went to sleep with the NocoDB / Postgres edition fully wired,
+the Mirror dual-write code merged, and the **Render Free 24/7 hosting
+bundle ready to push**.  Here's exactly what to do today, in priority
+order.
 
 This file is on the `feat/nocodb-edition` branch.  Once you're happy,
 merge into `main`.
 
+> **History:** We originally targeted Hugging Face Spaces.  Code
+> built and booted there but failed at runtime because HF blocks all
+> outbound traffic to `api.telegram.org`.  See
+> [`docs/HANDBOOK.md`](./HANDBOOK.md) §14c for the full story.  The
+> HF bundle is retained at `deploy/huggingface-edition/` for fork
+> authors who swap Telegram for a different chat front-end (Discord,
+> Gradio web UI, etc.) — both of which HF allows.
+
 ---
 
-## ⭐ TOP PRIORITY — get the bot running 24/7 on Hugging Face
+## ⭐ TOP PRIORITY — get the bot running 24/7 on Render
 
 This is the path to making the Telegram bot answer your messages
 *even when your laptop is closed*.  All the code is already in place
 (`Dockerfile`, env-var credentials, health server, deploy bundle,
 GitHub Actions cron).  You just need to do 3 click-paths:
 
-### 1. Create a Hugging Face account (2 min, no credit card)
+### 1. Create a Render account (2 min, no credit card)
 
-* https://huggingface.co/join → sign up → verify email.
-* Pick a username (becomes the Space URL).
+* https://render.com → "Get Started for Free" → "Sign up with GitHub".
+* Authorise Render's GitHub App for `expense-tracker-bot` only.
 
-### 2. Create a write token (1 min)
+### 2. Create the Web Service (3 min)
 
-* https://huggingface.co/settings/tokens → "New token"
-  → name `expense-bot-deploy`, type **Write** → Create.
-* **Copy the token** — it's shown once.
+* Render dashboard → **"New +"** → **"Web Service"**.
+* Pick the `expense-tracker-bot` repo.
+* Language: **Docker** (NOT Python).
+* Branch: `feat/nocodb-edition` (or `main` after merge).
+* Region: Oregon (US).
+* Instance Type: **Free**.
+* Health Check Path: `/health`.
+* Click **"Create Web Service"**.
 
-### 3. Follow the click-by-click runbook (12 min)
+### 3. Follow the click-by-click runbook (10 min)
 
-Open: **[`deploy/huggingface-edition/DEPLOY.md`](../deploy/huggingface-edition/DEPLOY.md)**
+Open: **[`deploy/render-edition/DEPLOY.md`](../deploy/render-edition/DEPLOY.md)**
 
 It walks you through:
 
-* Creating the Space (Docker SDK, free CPU tier).
-* Pasting 5–8 secrets into the Space Settings.
-* `git push huggingface feat/nocodb-edition:main` to trigger the
-  build.
-* Setting up the GitHub Actions keep-alive (`HF_SPACE_URL` repo
-  secret) so the Space never sleeps.
+* Pasting 8 secrets into the **Environment** tab (same secrets you
+  collected for Hugging Face — they're identical).
+* Watching the first build (~3 min) → look for `bot is now LIVE`
+  in container logs.
+* Setting up the GitHub Actions keep-alive (`RENDER_SERVICE_URL`
+  repo *variable*) so the service never spins down.
 * Smoke-testing with `/whoami` and "today I spent $5 on coffee".
+* Tearing down the dead Hugging Face Space.
 
 When you finish, you should be able to **close your laptop, walk
 away, send a Telegram message from your phone in Texas / anywhere in
@@ -283,8 +298,8 @@ git push origin feat/nocodb-edition  # if you want to keep the branch around
 | `STORAGE_BACKEND=sheets expense --chat "..."` | Force Sheets edition for one command |
 | `STORAGE_BACKEND=nocodb expense --chat "..."` | Force Postgres edition for one command |
 | `git push huggingface feat/nocodb-edition:main` | Deploy / update the HF Space |
-| `gh workflow run keep-hf-alive.yml` | Manually wake the HF Space |
-| `curl https://<space>.hf.space/health` | Liveness check (returns `ok`) |
+| `gh workflow run keep-render-alive.yml` | Manually wake the Render service |
+| `curl https://<service>.onrender.com/health` | Liveness check (returns `ok`) |
 | `docker build -t expense-bot . && docker run -p 7860:7860 --env-file .env expense-bot` | Local parity test of the HF image |
 | `STORAGE_BACKEND=mirror expense --chat "..."` | Test mirror dual-write for one message |
 | `expense --reconcile-dry-run` | Preview drift between Sheets + Postgres (mirror mode) |

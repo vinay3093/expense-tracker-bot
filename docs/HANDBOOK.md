@@ -501,14 +501,15 @@ pick a deploy bundle:
 
 | Edition | Host | Cost | Setup time | Best for |
 |---|---|---|---|---|
-| **Sheets** (default) | **Hugging Face Spaces** | Free forever | 15 min | The recommended starter — see [`deploy/huggingface-edition/DEPLOY.md`](../deploy/huggingface-edition/DEPLOY.md) |
+| **Sheets** (default) | **Render Free** | Free forever | 15 min | The recommended starter — see [`deploy/render-edition/DEPLOY.md`](../deploy/render-edition/DEPLOY.md) |
 | Sheets | Oracle Cloud Free | Free (when capacity available) | 1–2 h | Self-hosted, no public source code — [`deploy/sheets-edition/DEPLOY.md`](../deploy/sheets-edition/DEPLOY.md) |
 | Postgres + NocoDB | Oracle Cloud Free | Free (capacity dependent) | 2–3 h | Power users wanting a UI on top — [`deploy/nocodb-edition/DEPLOY.md`](../deploy/nocodb-edition/DEPLOY.md) |
 
-The Hugging Face path is the fast win: a 5-minute push gets you a 24/7
+The Render path is the fast win: a 5-minute push gets you a 24/7
 bot with `/health` keep-alive automation via GitHub Actions.  See §16
-Roadmap (Step 9 + 10) for the architecture context, and §16b for the
-full Hugging Face story.
+Roadmap (Step 9 + 10) for the architecture context, and §14c for the
+full hosting story (including why we moved off Hugging Face Spaces —
+HF blocks all outbound traffic to `api.telegram.org`).
 
 ---
 
@@ -1394,14 +1395,19 @@ CI.
 
 ---
 
-## 14c. Hugging Face Spaces edition (Step 11) — the 24/7 free host
+## 14c. Hosting story (Step 11) — the 24/7 free host
 
-### Why Hugging Face beat every other free 24/7 option in 2026
+> **TL;DR — current recommendation: Render Free.**  Skip to §14c.3 for
+> the live setup.  Sections §14c.1 (Hugging Face) and §14c.2 (Oracle)
+> are kept as historical record explaining what we tried, why we
+> moved, and what to fall back to if Render's free tier ever changes.
+
+### 14c.1 Hugging Face Spaces (what we tried first, and why we moved)
 
 After exhausting Oracle Cloud Free Tier (capacity issues), Render
 (15-minute idle sleep), and Koyeb (1-hour sleep + acquired by another
-company in 2025), Hugging Face Spaces emerged as the clear winner for
-a personal Telegram bot:
+company in 2025), Hugging Face Spaces *initially looked* like the
+winner for a personal Telegram bot:
 
 * **Free tier resources**: 2 vCPU, **16 GB RAM** (versus Render's
   512 MB), unlimited build time, 50 GB of bandwidth — enough headroom
@@ -1486,6 +1492,78 @@ Two new test files cover the Hugging Face moving parts:
 
 All 16 are hermetic — no network calls, no Hugging Face API hits,
 no real ports needed beyond the OS-assigned ephemeral test port.
+
+### 14c.2 Why we moved off Hugging Face Spaces
+
+The HF Space built and booted cleanly.  The container reported a
+healthy `/health` endpoint.  Logs showed every line up to
+`PTB bootstrap: awaiting Application.initialize() ...` — and then
+`telegram.error.TimedOut` after 5 seconds, every retry.
+
+Root cause: **Hugging Face Spaces blocks all outbound traffic to
+`api.telegram.org`** as a security policy (verified May 2026 from
+official HF community-forum threads — multiple users hit the
+identical `httpx.ConnectTimeout` on TLS handshake).  No timeout
+knob, library swap, or version pin can route around it.
+
+Workarounds the HF community suggested (Google App Script proxy
+in front of Telegram) add a separate moving piece that defeats
+the whole point of "free 24/7 with no ops".
+
+So we kept the HF bundle as documentation of a working Docker
+deploy on a sandboxed PaaS — useful if you fork this repo and
+swap Telegram for a different chat front-end (e.g. a Gradio web
+UI or Discord bot, both of which HF allows) — and pivoted to
+Render Free for the live bot.  All the HF-era code (Dockerfile,
+credentials resolver, health server, manual asyncio bootstrap)
+ports verbatim because we deliberately kept it host-agnostic.
+
+### 14c.3 Render Free (current 24/7 host)
+
+Render's free tier ticks the same boxes HF did, *plus* allows
+outbound to Telegram:
+
+| Question | Answer |
+|---|---|
+| Cost | $0/month (no credit card required) |
+| Telegram outbound | ✅ allowed (thousands of bots run on it) |
+| 24/7? | ✅ with a 14-min keep-alive cron (Render sleeps after 15 min idle) |
+| Hours cap | 750 / month / workspace = 31 days × 24 hrs = 744. Fits with ~6 hrs/month buffer. |
+| RAM / CPU | 512 MB / 0.1 CPU — tight but enough for our long-poll + occasional LLM call |
+| Auto-redeploy | Yes — every git push to the configured branch |
+| Public URL | `https://<service>.onrender.com` (free TLS) |
+
+#### What we ship for Render
+
+| Piece | Location | What it does |
+|---|---|---|
+| Blueprint | `deploy/render-edition/render.yaml` | One-click "New + → Blueprint → connect repo" sets up the Web Service with the right runtime, healthcheck, branch, and env-var stubs. |
+| Runbook | `deploy/render-edition/DEPLOY.md` | 15-minute click-by-click walkthrough.  Path A is Blueprint; Path B is the manual UI flow that always works on free accounts. |
+| Secrets checklist | `deploy/render-edition/secrets-checklist.md` | The 8 env vars that go into Render's encrypted env-var store. |
+| Bundle README | `deploy/render-edition/README.md` | Architecture diagram + comparison with HF / Koyeb / Fly / self-host. |
+| Keep-alive cron | `.github/workflows/keep-render-alive.yml` | Every 14 min: pings `${RENDER_SERVICE_URL}/health` with cold-start tolerance (6 retries × 90 s timeout).  Free for public repos. |
+
+The Dockerfile, credentials resolver, health server, and asyncio
+bootstrap are unchanged — Render uses the same `Dockerfile` at the
+repo root that HF used.  The only deploy-time difference is which
+PaaS we point at it.
+
+#### Caveats specific to Render Free
+
+* **750 hr/month cap** — a continuously-running service uses
+  ~720-744 hrs/month, so the buffer is ~6 hrs.  If you exceed,
+  the bot pauses until the 1st of next month.  Workaround: the
+  Starter plan ($7/mo) has no cap.
+* **Polling "Connection reset by peer" every few hours** — known
+  free-tier quirk on PaaS hosts that recycle TCP connections
+  aggressively.  python-telegram-bot auto-reconnects in a few
+  seconds; you may miss messages sent during that window.
+  Acceptable for personal expense logging; for production traffic
+  switch to webhook mode (future enhancement, ~half-day refactor).
+* **Cold-start after `750-hr cap` reset** — first request of
+  each new month takes ~30-60 s if the keep-alive cron beat us
+  to it.  The cron's 6-retry × 90 s tolerance handles this
+  automatically.
 
 ---
 
@@ -1715,8 +1793,10 @@ to append a new column at the end and the existing rows stay valid
 | 10a | `LedgerBackend` Protocol + universal data shapes (`TransactionRow`, `LedgerRow`, `LastRow`, `SkippedRow`, `LedgerInspection`, `BackendHealth`, `PeriodInfo`) — chat pipeline now backend-agnostic | done |
 | 10b | Postgres + NocoDB edition: SQLAlchemy 2.0 typed models with soft-delete + audit log; `PostgresLedgerBackend` adapter; Alembic migrations; `expense --init-postgres / --postgres-health / --migrate-sheets-to-postgres` CLI commands | done |
 | 10c | `deploy/nocodb-edition/` bundle (docker-compose for Postgres+NocoDB, `setup.sh` with random secrets + alembic, `expense-bot.service` with Postgres ready-wait, runbook with NocoDB UI walkthrough) | done |
-| 11a | Hugging Face Spaces edition: `Dockerfile` (multi-stage, non-root, tini PID-1, `$PORT` honoured), `GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT` env-var credentials, `HealthServer` (GET `/`, `/health`), `deploy/huggingface-edition/` bundle, GitHub Actions cron keep-alive (`.github/workflows/keep-hf-alive.yml`) | done |
+| 11a | Host-agnostic deploy primitives: `Dockerfile` (multi-stage, non-root, tini PID-1, `$PORT` honoured), `GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT` env-var credentials, `HealthServer` (GET `/`, `/health`), manual asyncio bootstrap that bypasses PTB's signal-handler dance | done |
 | 11b | Mirror edition (Sheets + Postgres dual-write): `MirrorLedgerBackend`, `STORAGE_BACKEND=mirror` + `MIRROR_PRIMARY` + `MIRROR_SECONDARY` settings, `expense --reconcile` + `--reconcile-dry-run` CLI for drift repair | done |
+| 11c | Hugging Face Spaces deploy bundle (`deploy/huggingface-edition/`): tried first, blocked by HF's outbound-traffic policy on `api.telegram.org`. Bundle retained as a working Docker-on-PaaS reference for fork authors who swap Telegram for a different chat front-end. | superseded |
+| 11d | Render Free deploy bundle (`deploy/render-edition/`): one-click `render.yaml` Blueprint, click-by-click `DEPLOY.md`, secrets checklist, GitHub Actions keep-alive cron at 14-min cadence (`.github/workflows/keep-render-alive.yml`). **Current 24/7 host.** | done |
 
 ### What "sellable" would require (out of current scope)
 

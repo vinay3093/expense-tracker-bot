@@ -1,0 +1,110 @@
+# Render Blueprint for the expense-tracker bot.
+#
+# What this file does
+# -------------------
+# Lets you deploy the bot in **one click** via Render's "Blueprint"
+# feature: connect your GitHub repo on https://dashboard.render.com,
+# Render detects this file, and creates the service with the right
+# runtime, port, healthcheck, and disk pre-configured.  Saves the
+# 4-page manual click-through in the dashboard UI.
+#
+# Why a Web Service (not a Background Worker)
+# -------------------------------------------
+# We need an HTTP listener for two reasons:
+#   1. Render's free tier spins down anything without HTTP traffic
+#      after 15 minutes of idle — our health endpoint + a GitHub
+#      Actions ping every 14 minutes is what keeps us awake 24/7.
+#   2. Render's *health check* requires a 200 OK on a configurable
+#      path; without one Render thinks the container is unhealthy
+#      and restarts it in a loop.
+# Background Workers don't get spun down but cost money on the
+# Standard plan and have no public URL — bad fit for free + chat.
+#
+# Why runtime: docker
+# -------------------
+# We have a hand-tuned multi-stage Dockerfile (~150MB final image,
+# non-root user, tini PID-1) that already works on Hugging Face,
+# Docker Compose, and any Linux box.  Re-using it on Render means
+# the bot behaves identically across every host — no surprises.
+#
+# Free tier ground rules (verified May 2026)
+# ------------------------------------------
+# * 1 Web Service free per workspace, 750 instance hours/month.
+#   24/7 = 31×24 = 744 hrs, fits with ~6 hrs/month buffer.
+# * 0.1 CPU / 512 MB RAM — plenty for our workload (long-poll +
+#   one LLM call every few minutes).
+# * Sleeps after 15 min of no inbound HTTP — countered by the
+#   GitHub Actions cron in `.github/workflows/keep-render-alive.yml`.
+# * Outbound to api.telegram.org / Groq / Google Sheets is allowed.
+#
+# How to use it
+# -------------
+# 1. Push this file (and the rest of the repo) to GitHub.
+# 2. Log in to https://dashboard.render.com (free, no credit card).
+# 3. Click "New +" → "Blueprint".
+# 4. Connect the GitHub repo, pick the branch.
+# 5. Render reads this file, shows a preview, click "Apply".
+# 6. Open the new service's "Environment" tab and paste the
+#    secrets from `secrets-checklist.md`.
+# 7. Click "Manual Deploy" → wait for first build (~3 min).
+# 8. Smoke-test from Telegram.
+#
+# See `DEPLOY.md` in this folder for the screen-by-screen runbook.
+
+services:
+  - type: web
+    # Render's default name — we keep it short so the auto-generated
+    # URL stays tidy (https://expense-bot.onrender.com instead of a
+    # 30-char monstrosity).  You can rename in the dashboard later
+    # without breaking anything because the URL is recomputed.
+    name: expense-bot
+    runtime: docker
+    plan: free
+    # Render auto-detects ./Dockerfile at the repo root.  Pinning it
+    # explicitly here documents intent and prevents accidents if we
+    # ever add a second Dockerfile elsewhere in the tree.
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Health check — Render hits this URL every 30s and considers
+    # the service unhealthy after 3 consecutive failures.  Our
+    # health server (started by `expense --telegram` when
+    # TELEGRAM_HEALTH_PORT is set) responds with `ok` here.
+    healthCheckPath: /health
+    # Region affects latency to Telegram + Groq + Google.  Oregon
+    # has the lowest median round-trip to all three from the US;
+    # change to `frankfurt` if you're in EU.
+    region: oregon
+    # Auto-deploy on every push to the chosen branch.  Easy to
+    # disable later: dashboard → service → Settings → "Build &
+    # Deploy" → toggle.
+    autoDeployTrigger: commit
+    # Branch to track.  Set to `main` once you merge `feat/nocodb-
+    # edition` to main; while that branch is the working one, point
+    # Render at it directly.
+    branch: feat/nocodb-edition
+    # Environment variables.  We declare the *names* here (so the
+    # dashboard shows them as required) but never the *values* —
+    # those go in the dashboard as encrypted secrets.  `sync: false`
+    # tells Render "don't overwrite my dashboard value with whatever
+    # is in this file", which is what we want for secrets.
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_USERS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: EXPENSE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT
+        sync: false
+      - key: LLM_PROVIDER
+        value: groq
+      - key: TIMEZONE
+        value: America/Chicago
+      - key: DEFAULT_CURRENCY
+        value: USD
+      # PORT is injected by Render automatically; our Dockerfile
+      # entrypoint reads $PORT and forwards it to TELEGRAM_HEALTH_PORT
+      # so the health server listens on the right socket.  Don't set
+      # it manually — Render will override yours.

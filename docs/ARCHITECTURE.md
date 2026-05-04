@@ -160,7 +160,8 @@ specific host + edition combination.
 
 | Folder | Host | Storage |
 |---|---|---|
-| `huggingface-edition/` | Hugging Face Spaces (free, recommended) | Sheets |
+| `render-edition/` | Render Free (recommended 24/7 host — Telegram works) | Sheets |
+| `huggingface-edition/` | Hugging Face Spaces (kept for fork authors; **HF blocks Telegram**) | Sheets |
 | `sheets-edition/` | Oracle Cloud Free / any Ubuntu VM | Sheets |
 | `nocodb-edition/` | Oracle Cloud Free + docker-compose | Postgres + NocoDB |
 
@@ -174,10 +175,10 @@ either a `systemd` unit or a `Dockerfile`.
 | File | Required at root by | Purpose |
 |---|---|---|
 | `pyproject.toml` | Python convention | Package metadata + deps |
-| `Dockerfile` | Hugging Face / Render / Koyeb | Container build (edition-agnostic) |
+| `Dockerfile` | Render / Koyeb / Hugging Face | Container build (edition-agnostic) |
 | `.dockerignore` | Docker | Keeps secrets / docs / logs out of the image |
 | `alembic.ini` | Alembic convention | Postgres migrations entry point |
-| `.github/workflows/` | GitHub Actions | CI + Hugging Face keep-alive |
+| `.github/workflows/` | GitHub Actions | CI + Render keep-alive |
 | `LICENSE` | OSS convention | MIT |
 | `README.md` | GitHub convention | Front door |
 | `docs/` | Us | All other documentation |
