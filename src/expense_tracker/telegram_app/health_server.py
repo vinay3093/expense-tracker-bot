@@ -17,6 +17,10 @@ module spins up a 1-route HTTP server in a daemon thread that:
 * Returns ``200 ok``    on ``GET /health`` → for UptimeRobot /
   GitHub Actions cron pings (the same workflow is what keeps a
   free-tier HF Space awake past the 48-hour idle window).
+* Mirrors the same status + headers for ``HEAD`` requests so
+  uptime monitors that default to HEAD (UptimeRobot, Pingdom,
+  StatusCake, …) don't see the BaseHTTPServer 501 fallback and
+  flip the monitor to "Down" by mistake.
 * Returns ``404`` on anything else        → no surface area for abuse.
 
 The server is a daemon thread so when the Telegram process dies
@@ -42,10 +46,25 @@ class _HealthHandler(BaseHTTPRequestHandler):
     # Suppress the default "127.0.0.1 - - [date] GET / 200" noise.
     # Health pings happen every few minutes; logging each one drowns
     # the *interesting* logs (LLM calls, expense writes).
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         return
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # noqa: N802 — required by BaseHTTPRequestHandler
+        self._respond(write_body=True)
+
+    # UptimeRobot, Pingdom, StatusCake and most other free uptime
+    # monitors default to HEAD because it's lighter than GET (no body
+    # transferred).  ``BaseHTTPRequestHandler`` returns 501 Not
+    # Implemented for any verb without a ``do_<VERB>`` method, which
+    # the monitor then reports as "Down" — exactly the false-negative
+    # we hit with the very first UptimeRobot probe on Render.
+    #
+    # We answer HEAD with the same status + headers as GET but skip
+    # writing the body (per RFC 7231 §4.3.2).
+    def do_HEAD(self) -> None:  # noqa: N802 — required by BaseHTTPRequestHandler
+        self._respond(write_body=False)
+
+    def _respond(self, *, write_body: bool) -> None:
         if self.path in ("/", "/health"):
             body = b"alive" if self.path == "/" else b"ok"
             self.send_response(200)
@@ -53,7 +72,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            if write_body:
+                self.wfile.write(body)
             return
 
         self.send_response(404)

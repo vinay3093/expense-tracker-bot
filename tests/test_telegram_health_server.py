@@ -8,6 +8,7 @@ healthcheck will hit in production.
 
 from __future__ import annotations
 
+import http.client
 import socket
 import urllib.request
 from urllib.error import HTTPError
@@ -45,10 +46,26 @@ def running_server():
 def _get(server: HealthServer, path: str) -> tuple[int, bytes]:
     url = f"http://127.0.0.1:{server.port}{path}"
     try:
-        with urllib.request.urlopen(url, timeout=2) as resp:
+        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310 - localhost
             return resp.status, resp.read()
     except HTTPError as exc:
         return exc.code, exc.read()
+
+
+def _head(server: HealthServer, path: str) -> tuple[int, str | None]:
+    """Issue a real HEAD request and return (status, content_length).
+
+    ``urllib.request`` only speaks GET/POST out of the box, so we drop
+    to ``http.client`` for direct verb control.  This is the same
+    method UptimeRobot/Pingdom use for HTTP monitors by default.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=2)
+    try:
+        conn.request("HEAD", path)
+        resp = conn.getresponse()
+        return resp.status, resp.getheader("Content-Length")
+    finally:
+        conn.close()
 
 
 def test_root_returns_alive(running_server):
@@ -65,6 +82,30 @@ def test_health_returns_ok(running_server):
 
 def test_unknown_route_returns_404(running_server):
     status, _body = _get(running_server, "/some-other-path")
+    assert status == 404
+
+
+def test_head_root_returns_200_with_content_length(running_server):
+    """Regression: UptimeRobot defaults to HEAD; without do_HEAD we'd
+    get 501 Not Implemented from BaseHTTPServer and the monitor would
+    flip to 'Down' even though the bot is healthy.
+
+    HEAD must mirror GET's status + Content-Length per RFC 7231 §4.3.2
+    but transfer no body.
+    """
+    status, content_length = _head(running_server, "/")
+    assert status == 200
+    assert content_length == str(len(b"alive"))
+
+
+def test_head_health_returns_200_with_content_length(running_server):
+    status, content_length = _head(running_server, "/health")
+    assert status == 200
+    assert content_length == str(len(b"ok"))
+
+
+def test_head_unknown_route_returns_404(running_server):
+    status, _content_length = _head(running_server, "/some-other-path")
     assert status == 404
 
 
