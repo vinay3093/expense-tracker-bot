@@ -294,8 +294,10 @@ which is for the optional mirror mode in §10).
   * Account at https://console.groq.com.
   * One API key (starts with `gsk_...`).
     (Stored as Render env var `GROQ_API_KEY`.)
-  * Default model: `llama-3.1-8b-instant` (cheap, fast, perfectly
-    capable of structured-JSON extraction).
+  * Default model: `openai/gpt-oss-20b` (cheap, fast, very reliable on
+    structured-JSON extraction). Migrated 2026-06-25 from
+    `llama-3.1-8b-instant`, which Groq deprecated with hard
+    decommission on 2026-08-16.
 * **How to recreate:**
   1. Sign up at https://console.groq.com (Google login is fine).
   2. Settings → API Keys → Create API Key.
@@ -440,7 +442,7 @@ Render (like Ollama URL).
 # === LLM ===
 LLM_PROVIDER=groq                         # or 'ollama' for offline
 GROQ_API_KEY=gsk_...
-GROQ_MODEL=llama-3.1-8b-instant
+GROQ_MODEL=openai/gpt-oss-20b
 OLLAMA_BASE_URL=http://localhost:11434    # only used if LLM_PROVIDER=ollama
 OLLAMA_MODEL=llama3.1
 LLM_TIMEOUT_S=30.0

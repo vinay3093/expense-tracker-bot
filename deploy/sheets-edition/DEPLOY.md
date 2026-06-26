@@ -162,7 +162,7 @@ chmod 600 ~/expense-tracker-bot/secrets/service-account.json
 # LLM
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_...
-GROQ_MODEL=llama-3.1-8b-instant
+GROQ_MODEL=openai/gpt-oss-20b
 
 # Locale
 TIMEZONE=America/Chicago        # match the timezone you actually live in

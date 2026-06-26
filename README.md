@@ -266,8 +266,9 @@ text ─► │ IntentClassifier │── query_*  ──────► ┌─
 
 ### Why two stages, not one
 
-A small free model (llama-3.1-8b on Groq) is much more reliable on
-two narrow prompts than one wide one. Each stage-2 prompt only sees
+A small free model (`openai/gpt-oss-20b` on Groq, previously
+`llama-3.1-8b-instant` until Groq deprecated it on 2026-06-25) is
+much more reliable on two narrow prompts than one wide one. Each stage-2 prompt only sees
 the schema relevant to *its* intent, with the user's local TODAY,
 default currency, and full canonical-category list embedded. The
 classifier's only job is picking the right schema.
@@ -821,7 +822,7 @@ Expected output (Groq, with tracing on):
 
 ```
 Provider : groq
-Model    : llama-3.1-8b-instant
+Model    : openai/gpt-oss-20b
 JSON mode: False
 Tracing  : ./logs/llm_calls.jsonl
 Sending tiny prompt...

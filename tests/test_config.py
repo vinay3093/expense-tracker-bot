@@ -12,7 +12,7 @@ def test_default_provider_is_groq(isolated_env) -> None:
     isolated_env()
     s = Settings()
     assert s.LLM_PROVIDER == "groq"
-    assert s.GROQ_MODEL == "llama-3.1-8b-instant"
+    assert s.GROQ_MODEL == "openai/gpt-oss-20b"
     assert s.OLLAMA_BASE_URL == "http://localhost:11434"
 
 

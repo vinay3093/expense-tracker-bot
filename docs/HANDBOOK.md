@@ -143,7 +143,7 @@ scope — see §16 for what would need to change to commercialize this.
 ```
 
 **Two LLM calls per turn, not one.** A small free model (Groq's
-`llama-3.1-8b-instant`) is more reliable on two narrow prompts than
+`openai/gpt-oss-20b`, previously `llama-3.1-8b-instant`) is more reliable on two narrow prompts than
 one wide one. The intent classifier picks the right schema
 (`ExpenseEntry` vs `RetrievalQuery`); the second-stage extractor only
 sees the schema relevant to that intent.
@@ -269,10 +269,13 @@ day) you'll never hit a rate limit.
    `gsk_AbCdEf...xyz`.
 4. Paste it into `.env` as `GROQ_API_KEY=...`.
 
-Default model used by this bot: `llama-3.1-8b-instant`. It's small,
-fast (~300ms latency per call), and good enough for the two-stage
-extraction pattern. You can override with `GROQ_MODEL=...` if Groq
-ever deprecates 3.1.
+Default model used by this bot: `openai/gpt-oss-20b` (since 2026-06-25;
+previously `llama-3.1-8b-instant`, deprecated by Groq with hard
+decommission on 2026-08-16). It's small, fast (~300ms latency per call),
+and reliable for the two-stage extraction pattern. You can override
+with `GROQ_MODEL=...` if Groq ever deprecates this model too —
+candidates: `meta-llama/llama-4-scout-17b-16e-instruct`,
+`qwen/qwen3-32b`, or any other OpenAI-compatible Groq model.
 
 ### 3.5 Telegram bot — BotFather, token, allow-list
 
@@ -371,7 +374,7 @@ Open `.env` and fill in. Every variable, in the order it appears:
 |---|---|---|
 | `LLM_PROVIDER` | `groq` | One of `groq` / `ollama` / `openai` / `anthropic` / `fake`. Groq is free and the default. |
 | `GROQ_API_KEY` | `gsk_...` | From §3.4. Required when provider is `groq`. |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Default. Override only if Groq deprecates this model. |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` | Default since 2026-06-25 (Groq deprecated `llama-3.1-8b-instant`). Override only if Groq deprecates this model too. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Only used when provider is `ollama`. |
 | `OLLAMA_MODEL` | `llama3.1` | The model you've `ollama pull`ed locally. |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | (paid) | For provider=`openai`. Requires the `[openai]` extra. |
