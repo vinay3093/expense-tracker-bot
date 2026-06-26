@@ -1,6 +1,6 @@
 # Expense Tracker Bot — Master Guide
 
-> **Status:** Live in production · **Last updated:** 2026-05-04 ·
+> **Status:** Live in production · **Last updated:** 2026-06-26 ·
 > **Author:** built collaboratively by Vinay + AI pair-programmer over multi-week sessions.
 >
 > This is the single source of truth for *what we built, how it's wired,
@@ -34,6 +34,7 @@
 10. [What's built but NOT active (Postgres mirror)](#10-whats-built-but-not-active-postgres-mirror)
 11. [Glossary](#11-glossary)
 12. [FAQ](#12-faq)
+13. [Change log & lessons learned](#13-change-log--lessons-learned) *(new — covers every prod change since launch with the reasoning behind it)*
 
 ---
 
@@ -303,10 +304,17 @@ which is for the optional mirror mode in §10).
   2. Settings → API Keys → Create API Key.
   3. Copy and store the key — you can't see it again after closing.
 * **Why Groq over OpenAI/Anthropic:** Free, fast, and the bot only
-  uses it for *extraction* (which Llama-3.1-8b nails) — we don't
-  need GPT-4-class reasoning. If you ever want to swap, set
-  `LLM_PROVIDER=openai` (or `anthropic`) and add the appropriate API
-  key — zero code changes.
+  uses it for *extraction* (which any small open-weights model
+  nails) — we don't need GPT-4-class reasoning. If you ever want to
+  swap, set `LLM_PROVIDER=openai` (or `anthropic`) and add the
+  appropriate API key — zero code changes.
+* **Model survivorship — important reality check:** Groq deprecates
+  models with surprising frequency (8B Llama dropped 7 weeks notice
+  on us in June 2026). The `LLMClient` Protocol means swapping in a
+  new model is one env-var (or one default change in `config.py`),
+  but you have to actually NOTICE the deprecation email. See §13.4
+  for the full story and §9.10 for the "Groq said they're killing
+  our model" runbook.
 
 ### 3.5 GitHub (code home + deploy trigger)
 
@@ -432,6 +440,7 @@ These are the variables required for the live 24/7 bot. All marked
 | 7 | `TIMEZONE` | recommended | `America/Chicago` | IANA timezone. Controls "today" / "yesterday" resolution. |
 | 8 | `DEFAULT_CURRENCY` | recommended | `USD` | Currency assumed when message has no marker (e.g. "spent 40 on coffee"). |
 | auto | `PORT` | injected by Render | `10000` | The port our health server must bind to. **Do not set manually.** |
+| — | `GROQ_MODEL` | **NOT SET** on Render | (would be `openai/gpt-oss-20b`) | Deliberately omitted. The code default in `src/expense_tracker/config.py` is the source of truth, so model migrations only need a code push — no Render dashboard click required. See §13.4 for why this design held up well during the June 2026 model migration. |
 
 ### 4.2 Local development (`.env` file)
 
@@ -941,6 +950,118 @@ Once on Render, several issues surfaced one by one:
   tests so this can never silently regress.
 * **Commit:** `de811c6`.
 
+### Phase 11 — Pre-build a year of monthly tabs (June 1, 2026)
+
+* **Goal:** Kill the "new month → 429 quota burst → user's first
+  message of the month fails" problem permanently for the next 12
+  months.
+* **What we built:** `scripts/_one_off_prebuild_year.py` —
+  laptop-side script that calls `build_month_tab()` and
+  `build_ytd_tab()` for each upcoming month, with a 60-sec sleep
+  between operations to stay under Google's 60-writes/min quota.
+* **What worked:** Built 7 out of 13 monthly tabs cleanly (July 2026,
+  September 2026, November 2026, January 2027, March 2027, April 2027,
+  June 2027) — plus YTD 2027 on a follow-up retry pass at 240-sec
+  pacing.
+* **What didn't (yet):** 3 months still wedged with 429 even at
+  240-sec pacing: **October 2026, December 2026, May 2027**. Root
+  cause appears to be the Render bot processing telemetry writes
+  concurrently with the bulk script, stealing quota at the edge of
+  the rolling window. **TODO before those months arrive:** either
+  retry again with the Render bot temporarily suspended, OR fix the
+  real root cause by batching the per-month API calls into a single
+  Sheets `batchUpdate` (would turn 80 calls into 1).
+* **Lesson:** The bulk script proves a workaround works; the real
+  fix is still upstream in `build_month_tab()`.
+* **Commits:** `3d34009` (initial script), `20ffba4` (added the
+  retry script and the YAML config tweaks).
+
+### Phase 12 — The silent-deploy-failure discovery (June 26, 2026)
+
+* **What we noticed:** While migrating Groq models (Phase 14), we
+  tried to deploy commit `20ffba4` and the Render Events tab showed
+  "Deploy failed". On closer look — **the June 1 prebuild-script
+  commit had ALSO failed to deploy.** The last successful deploy
+  was `a065868` from May 4.
+* **What that means:** **Production had been running 25-day-stale
+  code without anyone noticing.** Render's "graceful failover" —
+  keeping the last good build live when a new build fails — is
+  user-friendly but observability-hostile. The bot kept replying to
+  Telegram messages on May-4 code while every subsequent deploy
+  silently failed.
+* **Why we didn't notice for 25 days:**
+  - UptimeRobot only monitors *liveness* (HTTP 200), not *commit
+    freshness*.
+  - GitHub Actions CI passes don't imply Render deploys pass — they
+    use different build environments.
+  - No alert was wired for "deploy failed".
+* **Fixes:**
+  - Document this failure mode in the runbook (§9.9 new).
+  - **TODO:** add an alert path — either GitHub Action that pings the
+    Render API for deploy status after each push, or wire the Render
+    webhook → Telegram/email.
+* **Lesson:** Liveness checks are insufficient. You also need
+  *deploy-success* alerts.
+
+### Phase 13 — Hatch duplicate-file fix (June 26, 2026)
+
+* **The actual root cause** of the silent failures from Phase 12.
+* **What broke:** `hatchling` (our wheel build backend) released
+  1.27 in mid-2025 which hard-errors on duplicate file entries in
+  the wheel. Our `pyproject.toml` listed YAML data files **twice**
+  — once implicitly via `packages = ["src/expense_tracker"]` (which
+  ships everything under that path) and once explicitly via
+  `[tool.hatch.build.targets.wheel.force-include]` "for defensive
+  clarity". Old Hatch deduplicated silently; new Hatch raised:
+  ```
+  ValueError: A second file is being added to the wheel archive at
+  the same path: `expense_tracker/extractor/data/categories.yaml`.
+  ```
+* **Why our laptop didn't reproduce it:** local installs use
+  `pip install -e .` (editable) which doesn't build a wheel at all,
+  so the duplicate-file check never fires.
+* **Why Render started failing on June 1, not earlier:** Render's
+  Docker builder uses a fresh hatchling on every build (no caching
+  across builds). It happened to pull a 1.27+ version on the June 1
+  deploy attempt, and every attempt since.
+* **Fix:** Removed the redundant `force-include` block from
+  `pyproject.toml`. The `packages` line already ships both YAML
+  files (verified locally — `CategoryRegistry` loads 13 categories,
+  `SheetFormat` correctly renders "July 2026" from the config).
+  Full test suite (555 tests) still passes.
+* **Commit:** `f6b71a1`.
+
+### Phase 14 — Groq model migration (June 26, 2026)
+
+* **The trigger:** Groq emailed announcing **`llama-3.1-8b-instant`
+  is deprecated 2026-06-25, hard-decommissioned 2026-08-16**.
+  After that date every Groq API call for this model returns 410
+  Gone, the bot crashes at the intent-classify step, and every
+  Telegram message gets the global error handler's apology — silent
+  loss-of-service for the user.
+* **Migration target:** `openai/gpt-oss-20b` — Groq's recommended
+  replacement (OpenAI's open-weights model that Groq added day-zero
+  support for):
+  - Same OpenAI-compatible JSON-mode API → zero code-shape changes
+  - Same free-tier limits (30 RPM, 6K TPM, 14,400 RPD)
+  - Same 128K context window
+  - 2.5× larger model (20B vs 8B) → more reliable structured JSON
+  - ~2× throughput on Groq's silicon (1000 tok/s vs 560 tok/s)
+* **The change:** Updated `Settings.GROQ_MODEL` default in
+  `config.py` + the fallback in `groq_client.py` + the assertion in
+  `test_config.py` + every doc string referencing the old name.
+  No env var change needed on Render — `GROQ_MODEL` was never set
+  there (the code default is the source of truth).
+* **Live-verified locally** before push: both LLM-using paths
+  (`log_expense` and `query_category_total`) returned correctly-
+  shaped JSON in ~1.7s with 0.95 confidence on real expense and
+  query messages.
+* **The complication:** First push (`20ffba4`) silently failed to
+  deploy because of the Phase 12/13 Hatch issue. After the Phase
+  13 fix shipped (`f6b71a1`), both fixes deployed together because
+  Render rebuilds from HEAD, not commit-by-commit.
+* **Commits:** `20ffba4` (migration), `f6b71a1` (Hatch unblock).
+
 ### What's the bot doing right now?
 
 As of this guide's "last updated" timestamp:
@@ -948,8 +1069,14 @@ As of this guide's "last updated" timestamp:
 * Container running 24/7 at `https://expense-tracker-bot-z558.onrender.com`.
 * UptimeRobot pinging every 5 min from 3 US regions, 100% uptime.
 * GitHub Actions backup keep-alive running every 14 min.
-* Auto-deploy on every push to `main`.
-* Currently writing to Google Sheets only (mirror mode dormant).
+* Auto-deploy on every push to `main` (working again as of `f6b71a1`).
+* LLM = `openai/gpt-oss-20b` via Groq (migrated June 26 from the
+  now-deprecated `llama-3.1-8b-instant`; safely past the Aug 16
+  decommission deadline).
+* Writing to Google Sheets only (Postgres mirror mode still dormant —
+  the one remaining "future-me will thank present-me" task).
+* Monthly tabs pre-built through June 2027 for most months; 3 still
+  pending due to 429 issues (October 2026, December 2026, May 2027).
 
 ---
 
@@ -1118,6 +1245,63 @@ curl -s "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"
 Render dashboard → Events tab → find the previous good deploy →
 click the `Rollback` button on its row.
 
+### 9.9 Deploys are failing silently — bot is fine but new code never ships
+
+* **Symptom:** Bot replies to Telegram normally, UptimeRobot green,
+  but the latest code changes you pushed don't seem to be live.
+* **Root cause family:** Render keeps the last good build running
+  when a new build fails. The container itself doesn't restart, so
+  liveness checks all pass. You only find out by looking at the
+  Render **Events** tab and seeing red ❌ on recent deploys. We were
+  burned by this on June 26 — 25 days of silent failures (Phase 12).
+* **How to check this is happening to you:**
+  1. Render dashboard → expense-tracker-bot → **Events** tab.
+  2. Look at the very top entry. Green checkmark = latest deploy
+     succeeded. Red X = latest deploy FAILED but the previous good
+     one is still running (this is the silent failure).
+  3. Cross-check: compare the commit hash on the latest green
+     deploy with `git log -1 origin/main` (most recent push). If
+     they differ, deploys are silently failing.
+* **How to fix once spotted:**
+  1. Click `deploy logs` on the top failed deploy.
+  2. Scroll up from the bottom to find the actual error (NOT the
+     generic "exit code 1" at the very bottom — that's pip's noise).
+     Look for: `ERROR: Could not build wheel for X` / a Python
+     traceback / `ValueError:` / `ImportError:`.
+  3. Fix the issue locally, run `pytest`, push.
+* **Common causes** we've seen:
+  - **Hatch duplicate-file** (June 2026, our case) → see §13.3.
+  - **Python dependency yanked from PyPI** → pin that dependency.
+  - **Transitive dep dropped Python 3.11 support** → bump the
+    `requires-python` or pin the dep before the drop.
+* **Long-term prevention:** TODO — wire up a deploy-success alert.
+  Options: GitHub Action that polls Render's deploy API after each
+  push, or a Render webhook → Telegram. Without this, you only find
+  out when you try to deploy something else and it ALSO fails.
+
+### 9.10 Groq emailed saying our model is being deprecated
+
+* The migration is straightforward because of the `LLMClient`
+  Protocol — same OpenAI-compatible API across every Groq model,
+  so swapping is a one-line config change.
+* **Steps:**
+  1. Open the Groq console → Models → pick a replacement model.
+     Look for one with **OpenAI-compatible JSON mode** support
+     (almost all of them do). Recommended: their suggested
+     replacement in the deprecation email, OR
+     `meta-llama/llama-4-scout-17b-16e-instruct` (newer
+     architecture, generous free tier).
+  2. Update `src/expense_tracker/config.py` —
+     `GROQ_MODEL: str = Field(default="<new-model-id>")`.
+  3. Also update `src/expense_tracker/llm/groq_client.py` fallback
+     and `tests/test_config.py` assertion to match.
+  4. Run `expense --extract "spent 7 dollars on coffee"` locally to
+     verify the new model returns valid JSON.
+  5. Run `pytest` (should still pass).
+  6. Push to `main` → Render auto-deploys.
+  7. Verify in production by sending a Telegram message.
+* See §13.4 for the full June 2026 migration story for reference.
+
 ---
 
 ## 10. What's built but NOT active (Postgres mirror)
@@ -1269,6 +1453,103 @@ the next monthly tab the bot creates (existing tabs stay as-is).
 
 ---
 
+## 13. Change log & lessons learned
+
+A chronological record of every meaningful production change since the
+bot went live, with the **why** as much as the **what**. Reading this
+top-to-bottom gives you the institutional memory of how the system
+evolved and where the landmines have been.
+
+### 13.1 May 2026 — initial 24/7 launch on Render
+
+| Date | Commit | What | Why |
+|---|---|---|---|
+| 2026-05-03 | `29de007` | Created Render deploy bundle (`render.yaml`, `DEPLOY.md`, secrets checklist) | Hugging Face Spaces was the original 24/7 host plan but blocks all outbound traffic to `api.telegram.org` (deliberate HF security policy — confirmed via HF community forum). Pivoted to Render Free which has no outbound restrictions. |
+| 2026-05-03 | `919406f` | Replaced `app.run_polling()` with manual `asyncio.run(_serve_forever())` | PTB v21's `run_polling()` uses signal handlers that silently deadlock on non-default asyncio loops in some Linux containers. The replacement logs each bootstrap step (`initialize`, `start`, `start_polling`) so future hangs are pinpointable. |
+| 2026-05-04 | `3c9f06c` | Added per-handler `try/except` in `bot.py` + global PTB error handler in `factory.py` | A Sheets 429 exception cascaded into the polling loop, corrupted asyncio state, and silently killed all future message processing without crashing the container. The two-layer error handling guarantees the polling loop survives any handler exception. |
+| 2026-05-04 | `de811c6` | Added `do_HEAD` to `health_server.py` + 3 socket-level tests | UptimeRobot free tier hard-locks the HTTP method picker to HEAD. Our health server only implemented `do_GET` → `BaseHTTPServer` returned `501 Not Implemented` for HEAD → UptimeRobot reported "Down" on a perfectly healthy bot. |
+| 2026-05-04 | `a065868` | Initial `MASTER_GUIDE.md` (~1100 lines covering everything end-to-end) | One canonical reference doc. We now have HANDBOOK (pedagogical), MASTER_GUIDE (operational truth), ARCHITECTURE (code-deep), WAKE_UP (5-min recap). |
+
+**Lesson:** Every "deploy 24/7 on a free tier" problem comes back to *outbound network policy* (was Telegram allowed?) and *container lifecycle* (does the platform restart on crash? on idle?). Validate both before committing to a host.
+
+### 13.2 June 1, 2026 — pre-build a year of monthly tabs (partial)
+
+| Date | Commit | What | Why |
+|---|---|---|---|
+| 2026-06-01 | `3d34009` | Added `scripts/_one_off_prebuild_year.py` | Each time the bot creates a new monthly tab on the first message of a new month, it bursts ~80-100 Sheets API calls — over the 60/min quota — causing the user's first-of-month message to lose data. Pre-creating tabs from the laptop sidesteps this. |
+
+**Outcome:** Built 7 of 13 tabs cleanly (July/Sep/Nov 2026, Jan/Mar/Apr/Jun 2027 + YTD 2027). Three months still wedged at 429 even at 240-sec pacing (Oct 2026, Dec 2026, May 2027). Concurrent writes from the Render bot likely steal quota at the rolling window edge.
+
+**Lesson:** Workarounds for upstream issues (here: API call burst) are honest tactical fixes, not the real solution. The real fix is `build_month_tab()` using Sheets `batchUpdate` (one call instead of 80). That's still on the TODO list.
+
+**Hidden lesson revealed 25 days later:** *this commit was the first to silently fail to deploy* (see §13.3 below). We didn't notice because the bot kept replying.
+
+### 13.3 June 26, 2026 — silent deploy failures + Hatch fix
+
+The biggest operational scare to date — turned out to be a great forcing function for documenting the failure modes that already existed but were invisible.
+
+| Date | Commit | What | Why |
+|---|---|---|---|
+| 2026-06-26 12:14 AM | (none) | **Discovered: deploys had been silently failing for 25 days** | When trying to deploy the Groq model migration, noticed Render's Events tab showed FAILED on the previous attempt. Scrolled up — the June 1 prebuild commit had ALSO failed. Last successful deploy was `a065868` from May 4. Production was running stale code the whole time. |
+| 2026-06-26 12:14 AM | `f6b71a1` | Removed `[tool.hatch.build.targets.wheel.force-include]` from `pyproject.toml` | Hatch 1.27 (mid-2025) started hard-erroring on duplicate wheel entries instead of silently deduplicating. Our `pyproject.toml` listed the YAML data files **twice** — once via `packages = ["src/expense_tracker"]` (implicit) and once via `force-include` (explicit, "for defensive clarity"). Render's Docker build pulled a fresh hatchling that happened to be 1.27+ on June 1 and every build since failed with `ValueError: A second file is being added to the wheel archive`. |
+| 2026-06-26 12:15 AM | (deploy `f6b71a1`) | First successful Render deploy in 25 days | The Hatch fix unblocked builds. Render simultaneously picked up the queued Groq migration (§13.4). |
+
+**Lesson 1: liveness ≠ deploy-success.** UptimeRobot only knows the container is responding. It can't tell you which commit is running. **Action item:** wire up a deploy-success alert (Render webhook → Telegram, or a GitHub Action that polls Render's deploy API after each push).
+
+**Lesson 2: pip's "exit code 1" footer is noise.** The real Python error always lives 30-50 lines higher in the build log. Train your eye to scroll up past pip's `note: This is an issue with the package mentioned above, not pip` and find the actual `ValueError:` / `ImportError:` / `ERROR: Could not build wheel for X`.
+
+**Lesson 3: `pip install -e .` doesn't catch wheel-build issues.** Editable installs skip the wheel build entirely, so our local development never reproduced the Render failure. **Action item:** consider adding a `pytest` step that does `python -m build --wheel --no-isolation` to catch wheel issues in CI.
+
+**Lesson 4: defensive redundancy can become a liability.** The original `force-include` was added "in case `packages` doesn't ship data files." It worked fine for ~a year. Then the build tool changed semantics. The cost of carrying redundant config was a 25-day silent outage of our CI/CD path.
+
+### 13.4 June 26, 2026 — Groq model migration
+
+The trigger that exposed everything in §13.3.
+
+| Date | Commit | What | Why |
+|---|---|---|---|
+| 2026-06-25 | — | Groq emailed: `llama-3.1-8b-instant` deprecated today, hard decommission **2026-08-16** | Free/developer-tier users have 7 weeks of runway. After Aug 16, every Groq API call for that model returns 410 Gone, the bot crashes at intent-classify, and every Telegram message gets the apology handler — silent loss-of-service for the user. |
+| 2026-06-26 | `20ffba4` | Migrated default model to `openai/gpt-oss-20b` in `config.py` + `groq_client.py` + `test_config.py` + docs | Groq's officially recommended replacement (their day-zero support for OpenAI's open-weights models). Same OpenAI-compatible JSON API → zero code-shape changes. Same free-tier limits (30 RPM / 6K TPM / 14,400 RPD). Same 128K context. 2.5× larger model (20B vs 8B) → more reliable structured JSON. ~2× throughput on Groq silicon. |
+| 2026-06-26 | (deploy `f6b71a1` 12:15 AM) | New model effective in production | Render rebuilt from HEAD which included both `20ffba4` (model migration) and `f6b71a1` (Hatch unblock) — so both fixes deployed together. |
+
+**Why we chose to NOT set `GROQ_MODEL` as a Render env var:** The code default in `config.py` is the source of truth. This means:
+- Migrations only need a code push — no Render dashboard click that future-you might forget.
+- The default visible to everyone reading the repo matches what's actually running.
+- Setting it on Render would create two sources of truth that could diverge silently.
+
+This design choice held up perfectly during this migration — the env-var-less approach meant a single git push was the whole migration.
+
+**Lesson 1: assume your LLM provider will deprecate models faster than you'd like.** Groq gave 7 weeks. That's enough if you notice. It's catastrophic if your provider deprecation emails go to spam.
+
+**Lesson 2: pre-existing `LLMClient` Protocol abstraction paid off.** Because every LLM provider already conformed to the same interface, swapping models was a one-line config change instead of a refactor. **Time-to-migrate: ~30 min including all the docs updates and 2 live verification calls.**
+
+**Lesson 3: live verification matters even on "drop-in replacement" migrations.** Before pushing, ran `expense --extract "..."` twice — once for `log_expense` intent, once for `query_category_total` intent — to confirm the new model returned correctly-shaped JSON with reasonable confidence. Cost: 4 LLM calls, ~3 sec of laptop time. Insurance against the migration silently degrading extraction quality.
+
+### 13.5 The pattern across all these changes
+
+A few themes recur:
+
+1. **Every "drop-in" change has a non-zero chance of breaking something.** Hatch was a "drop-in" build tool update. Groq's "drop-in" replacement model needed local verification. The keep-alive cron was a "drop-in" alternative until UptimeRobot's free tier turned out to lock HEAD-only.
+2. **Observability gaps stay invisible until they bite.** We had 100% liveness uptime via UptimeRobot and 0% deploy-success visibility. The bot was "up" but stale for 25 days.
+3. **Workarounds buy time; root-cause fixes buy peace of mind.** The pre-build-a-year script is a workaround for the burst-API-call issue. The real fix (Sheets `batchUpdate`) is still TODO. Each new month is a reminder.
+4. **Documentation pays for itself the day you debug something you wrote 6 months ago.** Without this MASTER_GUIDE's runbook §9.x entries, every recurrence would be a new investigation. With them, it's a checklist.
+
+### 13.6 Open TODOs (future maintenance debt)
+
+| # | Item | Trigger to address |
+|---|------|---------------------|
+| 1 | Deploy-success alert (Render webhook → Telegram / GitHub Action polling Render API) | Before the next time a deploy silently fails |
+| 2 | `python -m build --wheel` step in CI to catch wheel-build issues locally | Same as #1 — both prevent the silent failure pattern |
+| 3 | Rebuild missing monthly tabs: October 2026, December 2026, May 2027 | Before each of those months arrives in real time |
+| 4 | Replace `build_month_tab()` per-cell API calls with a single Sheets `batchUpdate` | Eliminates the 429 burst issue at its root → makes the year-prebuild script obsolete |
+| 5 | Postgres mirror wiring (Supabase) — code is built, config not done | When SQL analytics over expense history becomes desired |
+| 6 | LLM model deprecation alert (auto-check `/v1/models` weekly?) | Nice-to-have. Email is good enough until it isn't. |
+| 7 | Receipt OCR HF Space (photo → bot logs the line) | When manual restaurant-receipt entry becomes annoying |
+
+---
+
 *End of Master Guide. If you hit a question this doesn't answer,
 add it to §12 with the answer once you find it — that's how this
-document stays useful long-term.*
+document stays useful long-term. If you make a production change
+not yet captured here, add a new row to §13 with the **why** —
+that's how this document compounds in value over time.*
