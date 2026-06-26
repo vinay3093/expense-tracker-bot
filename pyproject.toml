@@ -79,11 +79,16 @@ expense = "expense_tracker.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/expense_tracker"]
-
-# Bundle category / sheet-format YAML files into the wheel.
-[tool.hatch.build.targets.wheel.force-include]
-"src/expense_tracker/extractor/data" = "expense_tracker/extractor/data"
-"src/expense_tracker/ledger/sheets/data" = "expense_tracker/ledger/sheets/data"
+# Note: data files (categories.yaml, sheet_format.yaml) live UNDER
+# src/expense_tracker/ so the `packages` line above ships them
+# automatically.  We previously also listed them in
+# `[tool.hatch.build.targets.wheel.force-include]` for defensive
+# clarity — that worked under Hatch < 1.27 which silently
+# deduplicated, but Hatch >= 1.27 (released mid-2025) hard-errors on
+# duplicate wheel entries with "A second file is being added to the
+# wheel archive at the same path".  Removed the force-include block
+# to fix the Render Docker build that started failing 2026-06-01
+# (when Render's builder happened to upgrade hatchling).
 
 [tool.ruff]
 line-length = 100
