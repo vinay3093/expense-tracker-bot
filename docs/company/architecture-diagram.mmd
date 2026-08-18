@@ -1,0 +1,77 @@
+%% Expense Tracker Platform — Enterprise Architecture Diagram
+%% Render at https://mermaid.live or embed in Confluence / GitHub / Notion
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#E8F4FC',
+  'primaryBorderColor': '#1A5276',
+  'primaryTextColor': '#1B2631',
+  'lineColor': '#566573',
+  'secondaryColor': '#F4F6F7',
+  'tertiaryColor': '#FFFFFF',
+  'fontFamily': 'Segoe UI, Arial, sans-serif'
+}}}%%
+
+flowchart TB
+    subgraph Users["User Channel"]
+        U["Authorized users<br/>(Telegram mobile / desktop)"]
+    end
+
+    subgraph Presentation["Presentation Layer"]
+        TG["Telegram Bot Gateway<br/>Message handlers · Commands · Health endpoint"]
+        AUTH["Access Control<br/>Telegram user ID allow-list"]
+    end
+
+    subgraph Orchestration["Orchestration Layer"]
+        CHAT["Conversation Pipeline<br/>Intent routing · Reply formatting · Error isolation"]
+        LOG["Write Path<br/>Expense logging · Corrections · Undo"]
+        RET["Read Path<br/>Retrieval · Summaries · Period comparisons"]
+    end
+
+    subgraph Intelligence["Intelligence Layer"]
+        EXT["Structured Extraction<br/>Intent · Expense fields · Query parsing"]
+        LLM["LLM Abstraction<br/>Provider-agnostic JSON-mode API"]
+    end
+
+    subgraph Persistence["Persistence Layer"]
+        LED["Ledger Backend<br/>Unified storage protocol"]
+        SH["Google Sheets Edition<br/>Monthly workbook · FX · YTD"]
+        PG["Postgres / NocoDB Edition<br/>Typed schema · Audit · Soft delete"]
+        AUD["Observability Store<br/>Chat history · LLM trace logs (JSONL)"]
+    end
+
+    subgraph External["External Services"]
+        GROQ["LLM Providers<br/>Groq · OpenAI · Anthropic · Ollama (local)"]
+        GS["Google Sheets API"]
+        DB[("PostgreSQL")]
+        FX["Frankfurter FX API<br/>(currency conversion)"]
+    end
+
+    U --> TG
+    TG --> AUTH
+    AUTH --> CHAT
+    CHAT --> EXT
+    CHAT --> LOG
+    CHAT --> RET
+    EXT --> LLM
+    LOG --> LED
+    RET --> LED
+    CHAT --> AUD
+    LLM --> GROQ
+    LED --> SH
+    LED --> PG
+    SH --> GS
+    PG --> DB
+    SH --> FX
+
+    classDef user fill:#D5F5E3,stroke:#1E8449,stroke-width:2px
+    classDef pres fill:#D6EAF8,stroke:#1A5276,stroke-width:2px
+    classDef orch fill:#EBF5FB,stroke:#2874A6,stroke-width:2px
+    classDef intel fill:#FEF9E7,stroke:#B7950B,stroke-width:2px
+    classDef persist fill:#F5EEF8,stroke:#7D3C98,stroke-width:2px
+    classDef ext fill:#FADBD8,stroke:#922B21,stroke-width:2px
+
+    class U user
+    class TG,AUTH pres
+    class CHAT,LOG,RET orch
+    class EXT,LLM intel
+    class LED,SH,PG,AUD persist
+    class GROQ,GS,DB,FX ext
