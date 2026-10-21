@@ -77,7 +77,13 @@ _WELCOME_TEXT = (
     "See how you're tracking:\n"
     "  /summary               last 7 days vs the 7 before that\n"
     "  /summary month         this month so far vs last month thru same day\n"
-    "  /summary year          year-to-date vs last year thru same date"
+    "  /summary year          year-to-date vs last year thru same date\n\n"
+    "Trips:\n"
+    "  /trip create Cali 2026-11-01 2026-11-11 2500\n"
+    "  /trip summary\n"
+    "  /trip close\n"
+    "While a trip is active, each expense is also copied to that trip's sheet.\n"
+    "Add the word personal to keep one expense off the trip."
 )
 
 
@@ -146,6 +152,17 @@ class MessageProcessor:
                 reply_text="(empty message — nothing to log)",
                 chat_turn=None,
             )
+
+        trips = getattr(self._pipeline, "trips", None)
+        if cleaned.lower().startswith("/trip") and trips is None:
+            return ProcessedMessage(
+                reply_text="Trips need the Sheets ledger.",
+                chat_turn=None,
+            )
+        if trips is not None:
+            trip_reply = trips.handle(cleaned)
+            if trip_reply is not None:
+                return ProcessedMessage(reply_text=trip_reply, chat_turn=None)
 
         try:
             turn = self._pipeline.chat(cleaned)
@@ -691,6 +708,30 @@ def make_edit_handler(processor: CorrectionProcessor):
         await _reply_safely(update, reply)
 
     return handle_edit
+
+
+def make_trip_handler(processor: MessageProcessor):
+    """``/trip ...`` — create, inspect, and close a trip."""
+
+    async def handle_trip(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        msg = update.effective_message
+        if msg is None or msg.text is None:
+            return
+        await _send_typing(update)
+        processed = await asyncio.to_thread(
+            processor.process,
+            user_id=user_id,
+            text=msg.text.strip(),
+        )
+        await _reply_safely(update, processed.reply_text)
+
+    return handle_trip
 
 
 def make_summary_handler(processor: SummaryProcessor):

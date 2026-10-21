@@ -105,6 +105,8 @@ def _reply_logged(result: ExtractionResult, log_result: LogResult) -> str:
     if extras:
         line += " (" + ", ".join(extras) + ")"
 
+    if row.trip:
+        line += f" on trip {row.trip}"
     line += f". Tab: {log_result.monthly_tab}"
     if log_result.monthly_tab_created:
         line += " (newly created)"

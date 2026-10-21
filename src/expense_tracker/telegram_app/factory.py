@@ -31,6 +31,7 @@ from .bot import (
     make_start_handler,
     make_summary_handler,
     make_text_handler,
+    make_trip_handler,
     make_undo_handler,
     make_whoami_handler,
 )
@@ -213,6 +214,7 @@ def build_application(
     app.add_handler(CommandHandler("undo", make_undo_handler(correction_processor)))
     app.add_handler(CommandHandler("edit", make_edit_handler(correction_processor)))
     app.add_handler(CommandHandler("summary", make_summary_handler(summary_processor)))
+    app.add_handler(CommandHandler("trip", make_trip_handler(processor)))
     # Text messages that aren't commands flow through the chat pipeline.
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, make_text_handler(processor))

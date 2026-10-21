@@ -365,6 +365,7 @@ def _parse_sheets_row(
         source=str(_at("source") or "").strip(),
         trace_id=_optional_str(_at("trace_id")),
         timestamp=timestamp,
+        trip=_optional_str(_at("trip")),
     )
 
 

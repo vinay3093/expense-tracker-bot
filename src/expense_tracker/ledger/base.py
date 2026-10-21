@@ -108,6 +108,8 @@ class TransactionRow:
     trace_id: str | None = None
     """LLM call ID that produced this row, for audit + debugging."""
     timestamp: datetime | None = None
+    trip: str | None = None
+    """Name of the trip this expense belongs to; ``None`` for everyday spend."""
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,7 @@ class LedgerRow:
     source: str
     trace_id: str | None
     timestamp: datetime | None
+    trip: str | None = None
 
 
 @dataclass(frozen=True)

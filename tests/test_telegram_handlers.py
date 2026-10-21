@@ -241,7 +241,7 @@ def test_build_application_registers_expected_handlers() -> None:
         if isinstance(h, CommandHandler) and h.commands:
             command_names.update(h.commands)
     assert command_names == {
-        "start", "help", "whoami", "last", "undo", "edit", "summary",
+        "start", "help", "whoami", "last", "undo", "edit", "summary", "trip",
     }
 
     message_handlers = [h for h in handlers if isinstance(h, MessageHandler)]

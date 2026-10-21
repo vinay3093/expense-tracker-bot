@@ -62,6 +62,12 @@ def get_chat_pipeline(
     )
     orchestrator = orchestrator or Orchestrator.from_settings(cfg)
 
+    trips = None
+    from ..ledger.sheets.adapter import SheetsLedgerBackend
+    if isinstance(ledger, SheetsLedgerBackend):
+        from ..trips import TripService
+        trips = TripService(ledger.sheets_backend)
+
     expense_logger = ExpenseLogger(
         ledger=ledger,
         registry=registry,
@@ -86,6 +92,7 @@ def get_chat_pipeline(
         expense_logger=expense_logger,
         retrieval_engine=retrieval_engine,
         correction_logger=correction_logger,
+        trips=trips,
     )
 
 

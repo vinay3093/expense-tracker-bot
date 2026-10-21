@@ -150,6 +150,12 @@ TRANSACTIONS_COLUMNS: tuple[TransactionColumn, ...] = (
             "was logged."
         ),
     ),
+    TransactionColumn(
+        key="trip",
+        header="Trip",
+        type=ColumnType.TEXT,
+        description='Trip name ("Cali 2026") or blank for everyday spend.',
+    ),
 )
 
 
@@ -200,6 +206,7 @@ def transaction_row_to_cells(row: TransactionRow) -> list[Any]:
         row.source,
         row.trace_id or "",
         ts,
+        row.trip or "",
     ]
 
 
@@ -228,7 +235,15 @@ def init_transactions_tab(
         # Trim trailing empty cells before comparing — Sheets sometimes
         # returns the header padded out to the worksheet's col_count.
         actual_trimmed = [c for c in actual if c not in ("", None)]
-        if actual_trimmed and actual_trimmed != header_row():
+        expected = header_row()
+        if actual_trimmed and actual_trimmed == expected[: len(actual_trimmed)]:
+            # Older ledger missing trailing columns: extend the header
+            # in place. Existing rows read the new cells as blank.
+            if len(actual_trimmed) < cols:
+                if ws.col_count < cols:
+                    ws.resize(cols=cols)
+                ws.update_values(f"A1:{col_index_to_letter(cols - 1)}1", [expected])
+        elif actual_trimmed:
             raise SheetFormatError(
                 f"Transactions tab {name!r} has unexpected header row: "
                 f"got {actual_trimmed!r}, expected {header_row()!r}. "

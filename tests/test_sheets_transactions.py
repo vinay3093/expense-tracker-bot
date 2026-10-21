@@ -34,10 +34,10 @@ def test_columns_have_unique_keys_and_headers():
 
 
 def test_index_for_known_keys():
-    # New schema: Date is the leftmost column, Timestamp is the rightmost.
+    # Date stays leftmost. Trip is appended at the right so old rows still parse.
     assert transactions_index_for("date") == 0
     assert transactions_index_for("category") == 4
-    assert transactions_index_for("timestamp") == len(TRANSACTIONS_COLUMNS) - 1
+    assert transactions_index_for("trip") == len(TRANSACTIONS_COLUMNS) - 1
 
 
 def test_index_for_unknown_raises():

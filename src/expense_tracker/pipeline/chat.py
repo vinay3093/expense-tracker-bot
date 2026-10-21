@@ -99,11 +99,17 @@ class ChatPipeline:
         expense_logger: ExpenseLogger,
         retrieval_engine: RetrievalEngine | None = None,
         correction_logger: CorrectionLogger | None = None,
+        trips: object | None = None,
     ) -> None:
         self._orch = orchestrator
         self._logger = expense_logger
         self._retriever = retrieval_engine
         self._corrector = correction_logger
+        self._trips = trips
+
+    @property
+    def trips(self) -> object | None:
+        return self._trips
 
     @property
     def corrector(self) -> CorrectionLogger | None:
@@ -166,6 +172,14 @@ class ChatPipeline:
             retrieval_answer=retrieval_answer,
             retrieval_error=retrieval_error,
         )
+        if (
+            log_result is not None
+            and log_result.row.trip
+            and self._trips is not None
+        ):
+            note = self._trips.project(log_result.row)  # type: ignore[attr-defined]
+            if note:
+                bot_reply += "\n" + note
 
         # One complete turn, written exactly once.
         self._orch.persist_turn(result, action=action, bot_reply=bot_reply)
@@ -208,8 +222,11 @@ class ChatPipeline:
         # auditable straight back to the prompt that produced it.
         trace_id = result.trace_ids[-1] if result.trace_ids else None
 
+        trip = None
+        if self._trips is not None:
+            trip = self._trips.attach_name(result.user_text)  # type: ignore[attr-defined]
         try:
-            return self._logger.log(result.expense, trace_id=trace_id), None
+            return self._logger.log(result.expense, trace_id=trace_id, trip=trip), None
         except ExpenseLogError as exc:
             _log.warning("Sheet write failed: %s", exc)
             return None, exc

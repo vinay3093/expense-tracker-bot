@@ -145,6 +145,7 @@ class ExpenseLogger:
         entry: ExpenseEntry,
         *,
         trace_id: str | None = None,
+        trip: str | None = None,
     ) -> LogResult:
         """Append one expense to the master ledger and return a receipt.
 
@@ -181,6 +182,7 @@ class ExpenseLogger:
             canonical_category=canonical_category,
             conv=conv,
             trace_id=trace_id,
+            trip=trip,
         )
 
         try:
@@ -231,6 +233,7 @@ class ExpenseLogger:
         canonical_category: str,
         conv: ConversionResult,
         trace_id: str | None,
+        trip: str | None = None,
     ) -> TransactionRow:
         """Project an ExpenseEntry into the Transactions row schema."""
         ts = self._now()
@@ -260,6 +263,7 @@ class ExpenseLogger:
             source=self._source,
             trace_id=trace_id,
             timestamp=ts,
+            trip=trip,
         )
 
 
