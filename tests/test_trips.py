@@ -114,3 +114,8 @@ def test_trip_tab_is_added_to_the_vacation_workbook():
     assert trips.project(row) is None
     copied = vacation.get_worksheet("California, October 2026").get_values("A2:B2")
     assert copied[0] == ["2026-10-25", "Food"]
+    again = trips.handle("/trip create California 2026-10-24 2026-11-02 3500")
+    assert again is not None
+    assert "already created" in again
+    assert "California is the active trip" in again
+    assert vacation.has_worksheet("California, October 2026")

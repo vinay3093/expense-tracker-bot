@@ -258,6 +258,19 @@ class TripService:
 
     def _create(self, rest: str) -> str:
         name, start, end, budget, currency = _parse_create(rest)
+        existing = next(
+            (
+                trip for trip in self._load()
+                if trip.name.lower() == name.lower() and trip.start == start
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing.status == "closed":
+                return f"{existing.name} is closed. Create it again with a different start date."
+            switched = self._switch(existing.name)
+            tab = f"\nTab: {existing.tab}" if existing.tab != "Transactions" else ""
+            return switched + tab + "\nThis trip was already created."
         paused = self._active()
         if paused is not None:
             self._set_status(paused, "paused")
