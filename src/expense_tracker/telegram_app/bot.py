@@ -86,6 +86,13 @@ _WELCOME_TEXT = (
     "Add the word personal to keep one expense off the trip.\n\n"
     "Pay stub:\n"
     "  sal: then paste the stub, or send the PDF with caption sal:\n"
+    "  sal: gross for 2026\n"
+    "  sal: total tax paid for October\n"
+    "  sal: total net pay for 2026\n"
+    "  sal: summary for 2026\n"
+    "  sal: October vs last year\n"
+    "  sal: tax breakdown\n"
+    "  sal: hikes\n"
     "The bot stores the paycheck amounts only. It does not store the file, "
     "SSN, or bank accounts."
 )
@@ -206,12 +213,12 @@ class MessageProcessor:
         return self.record_salary(text)
 
     def record_salary(self, text: str) -> str:
-        """Parse a pay stub locally and update the Salary Review year tab."""
+        """Save a pay stub or answer a question from Salary Review."""
         from ..config import get_settings
-        from ..salary import parse_paystub, save_paystub
+        from ..salary import parse_paystub, query_salary, save_paystub
 
         stub = parse_paystub(text)
-        if stub is None:
+        if stub is None and ("pay date" in text.lower() or len(text) > 500):
             return (
                 "I couldn't find the pay date and gross pay. "
                 "Paste the stub after sal:, or send the PDF with caption sal:."
@@ -227,7 +234,9 @@ class MessageProcessor:
                 "I couldn't open Salary Review. Share that spreadsheet with "
                 f"the service account, then try again. ({type(exc).__name__})"
             )
-        return save_paystub(book, stub)
+        if stub is not None:
+            return save_paystub(book, stub)
+        return query_salary(book, text)
 
     def process_callback(self, *, user_id: int | None, data: str) -> ProcessedMessage:
         decision = self._auth.check(user_id)
