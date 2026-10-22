@@ -149,9 +149,49 @@ def test_save_writes_year_tab_and_marks_a_later_hike():
     assert raised is not None
     second = save_paystub(book, raised)
     assert "hike" in second
-    rows = book.get_worksheet("2026").get_values("A2:F3")
-    assert rows[0][0] == "2026-10-15"
-    assert rows[1][5] == "hike"
+    rows = book.get_worksheet("2026").get_values("A1:G3")
+    assert rows[0][1] == "Month"
+    assert rows[1][0] == "2026-10-15"
+    assert rows[1][1] == "October"
+    assert rows[2][0] == "2026-10-31"
+    assert rows[2][1] == "October"
+    assert rows[2][6] == "hike"
+
+
+def test_paychecks_sort_by_month_and_half():
+    book = FakeSheetsBackend(title="Salary Review")
+    second_half = parse_paystub(_STUB.replace("PAY DATE:\n10/15/2026", "PAY DATE:\n10/31/2026", 1))
+    first_half = parse_paystub(_STUB)
+    april = parse_paystub(_STUB.replace("10/15/2026", "04/15/2026"))
+    assert second_half and first_half and april
+    save_paystub(book, second_half)
+    save_paystub(book, first_half)
+    save_paystub(book, april)
+
+    rows = book.get_worksheet("2026").get_values("A2:B4")
+    assert [row[0] for row in rows] == ["2026-04-15", "2026-10-15", "2026-10-31"]
+    assert [row[1] for row in rows] == ["April", "October", "October"]
+
+
+def test_existing_row_keeps_its_amounts_when_month_is_added():
+    book = FakeSheetsBackend(title="Salary Review")
+    ws = book.create_worksheet("2026", rows=80, cols=40)
+    ws.update_values(
+        "A1:F1",
+        [["Pay date", "Annual salary", "Pay this check", "Gross", "Federal", "Net pay"]],
+    )
+    ws.update_values("A2:F2", [["2026-10-15", 127999.92, 5333.33, 5333.33, 391.14, 4001.76]])
+    april = parse_paystub(_STUB.replace("10/15/2026", "04/30/2026"))
+    assert april is not None
+    save_paystub(book, april)
+
+    rows = ws.get_values("A1:AG3")
+    federal = rows[0].index("Federal")
+    assert rows[1][0] == "2026-04-30"
+    assert rows[1][1] == "April"
+    assert rows[2][0] == "2026-10-15"
+    assert rows[2][1] == "October"
+    assert rows[2][federal] == 391.14
 
 
 def test_salary_questions_total_compare_and_explain():

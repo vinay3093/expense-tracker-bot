@@ -16,6 +16,7 @@ from .ledger.sheets.backend import SheetsBackend, col_index_to_letter
 
 _HEADERS = (
     "Pay date",
+    "Month",
     "Annual salary",
     "Pay this check",
     "Change $",
@@ -160,18 +161,25 @@ def pdf_text(data: bytes) -> str:
 
 
 def save_paystub(book: SheetsBackend, stub: PayStub) -> str:
-    """Write this paycheck onto the year tab. The same pay date is updated in place."""
+    """Write this paycheck onto the year tab, then keep rows in pay-date order.
+
+    Each month has two rows when both checks exist: the 1st–15th check
+    above the 16th–31st check. A later upload for an earlier month is
+    inserted in that order instead of appended.
+    """
     title = str(stub.pay_date.year)
     if book.has_worksheet(title):
         ws = book.get_worksheet(title)
     else:
         ws = book.create_worksheet(title, rows=80, cols=len(_HEADERS))
-    _ensure_header(ws)
-    row_number = _row_for_date(ws, stub.pay_date)
-    previous_pay = _previous_pay(ws, row_number)
-    values = _row_values(stub, previous_pay, row_number)
-    end = col_index_to_letter(len(_HEADERS) - 1)
-    ws.update_values(f"A{row_number}:{end}{row_number}", [values])
+    if ws.col_count < len(_HEADERS):
+        ws.resize(rows=max(ws.row_count, 80), cols=len(_HEADERS))
+    records, clear_until = _read_records(ws)
+    records = [record for record in records if record["pay_date"] != stub.pay_date]
+    records.append(_record_from_stub(stub))
+    records.sort(key=lambda record: record["pay_date"])
+    _write_records(ws, records, clear_until)
+    previous_pay = _previous_salary(records, stub.pay_date)
     return _reply(stub, previous_pay, title)
 
 
@@ -222,93 +230,138 @@ def query_salary(book: SheetsBackend, question: str, *, today: date | None = Non
     return _format_total(metric, picked, primary, others, other_span)
 
 
-def _ensure_header(ws) -> None:
-    current = ws.get_values("A1")
-    a1 = str(current[0][0]).strip() if current and current[0] else ""
-    header = list(_HEADERS)
-    if a1 == header[0]:
-        return
-    blank = [""] * len(header)
-    if a1 == "Month":
-        ws.update_values(f"A1:{col_index_to_letter(len(header) - 1)}40", [header, *([blank] * 39)])
-        return
-    ws.update_values(f"A1:{col_index_to_letter(len(header) - 1)}1", [header])
+_STORED_FIELDS = tuple(
+    header for header in _HEADERS
+    if header not in {
+        "Pay date", "Month", "Change $", "Change %", "Change type",
+        "YTD gross", "YTD net", "YTD bonus",
+    }
+)
 
 
-def _row_for_date(ws, pay_date: date) -> int:
-    iso = pay_date.isoformat()
-    found = ws.get_values("A2:A80")
-    for offset, raw in enumerate(found):
-        cell = str(raw[0]).strip() if raw else ""
-        if cell in {iso, pay_date.strftime("%m/%d/%Y")}:
-            return offset + 2
-        if not cell:
-            return offset + 2
-    return len(found) + 2
+def _sheet_header(ws) -> list[str]:
+    width = max(len(_HEADERS), ws.col_count)
+    found = ws.get_values(f"A1:{col_index_to_letter(width - 1)}1")
+    if not found or not found[0]:
+        return []
+    cells = [str(cell).strip() for cell in found[0]]
+    while cells and not cells[-1]:
+        cells.pop()
+    return cells
 
 
-def _previous_pay(ws, row_number: int) -> float | None:
-    if row_number <= 2:
-        return None
-    found = ws.get_values(f"C{row_number - 1}")
-    if not found or not found[0] or found[0][0] in ("", None):
-        return None
-    try:
-        return float(str(found[0][0]).replace(",", "").replace("$", ""))
-    except ValueError:
-        return None
+def _read_records(ws) -> tuple[list[dict], int]:
+    """Return paycheck rows and how far down the old tab should be cleared."""
+    header = _sheet_header(ws)
+    if not header or header[0] != "Pay date":
+        return [], 40 if header and header[0] == "Month" else 1
+    index = {name: position for position, name in enumerate(header)}
+    end = col_index_to_letter(len(header) - 1)
+    records: list[dict] = []
+    last_row = 1
+    for offset, raw in enumerate(ws.get_values(f"A2:{end}80")):
+        pay_date = _cell_date(raw[index["Pay date"]] if raw else "")
+        if pay_date is None:
+            continue
+        last_row = offset + 2
+        record = {"pay_date": pay_date}
+        for name in _STORED_FIELDS:
+            position = index.get(name)
+            record[name] = raw[position] if position is not None and position < len(raw) else 0
+        records.append(record)
+    return records, last_row
 
 
-def _row_values(stub: PayStub, previous_pay: float | None, row_number: int) -> list:
-    change = None if previous_pay is None else round(stub.salary - previous_pay, 2)
+def _record_from_stub(stub: PayStub) -> dict:
+    return {
+        "pay_date": stub.pay_date,
+        "Annual salary": stub.annual_salary,
+        "Pay this check": stub.salary,
+        "Salary": stub.salary,
+        "Holiday": stub.holiday,
+        "PTO": stub.pto,
+        "Bonus": stub.bonus,
+        "Gross": stub.gross,
+        "Federal": stub.federal,
+        "State": stub.state,
+        "Local": stub.local,
+        "Social Security": stub.social_security,
+        "Medicare": stub.medicare,
+        "Total tax": stub.total_tax,
+        "Medical": stub.medical,
+        "Dental": stub.dental,
+        "Vision": stub.vision,
+        "HSA": stub.hsa,
+        "401K": stub.retirement,
+        "401K %": stub.retirement_pct,
+        "Total deductions": stub.total_deductions,
+        "Employer medical": stub.employer_medical,
+        "Employer HSA": stub.employer_hsa,
+        "Employer total": stub.employer_total,
+        "Net pay": stub.net_pay,
+        "Take-home %": stub.take_home_pct,
+    }
+
+
+def _write_records(ws, records: list[dict], clear_until: int) -> None:
+    rendered: list[list] = []
+    previous: float | None = None
+    for offset, record in enumerate(records):
+        rendered.append(_render_record(record, previous, offset + 2))
+        previous = _cell_amount(record.get("Pay this check"))
+    last_written = 1 + len(rendered)
+    blanks = [
+        [""] * len(_HEADERS)
+        for _ in range(max(0, clear_until - last_written))
+    ]
+    end = col_index_to_letter(len(_HEADERS) - 1)
+    ws.update_values(
+        f"A1:{end}{max(last_written, clear_until)}",
+        [list(_HEADERS), *rendered, *blanks],
+    )
+
+
+def _render_record(record: dict, previous_pay: float | None, row_number: int) -> list:
+    salary = _cell_amount(record.get("Pay this check"))
+    change = None if previous_pay is None else round(salary - previous_pay, 2)
     change_pct = ""
     if previous_pay:
-        change_pct = round((stub.salary - previous_pay) / previous_pay, 4)
+        change_pct = round((salary - previous_pay) / previous_pay, 4)
     if previous_pay is None:
         change_type = "starting"
     elif change and change > 0.009:
         change_type = "hike"
-    elif stub.bonus > 0:
+    elif _cell_amount(record.get("Bonus")) > 0:
         change_type = "bonus"
     else:
         change_type = ""
-    gross_col = col_index_to_letter(_HEADERS.index("Gross"))
-    net_col = col_index_to_letter(_HEADERS.index("Net pay"))
-    bonus_col = col_index_to_letter(_HEADERS.index("Bonus"))
-    return [
-        stub.pay_date.isoformat(),
-        stub.annual_salary,
-        stub.salary,
-        0 if change is None else change,
-        change_pct,
-        change_type,
-        stub.salary,
-        stub.holiday,
-        stub.pto,
-        stub.bonus,
-        stub.gross,
-        stub.federal,
-        stub.state,
-        stub.local,
-        stub.social_security,
-        stub.medicare,
-        stub.total_tax,
-        stub.medical,
-        stub.dental,
-        stub.vision,
-        stub.hsa,
-        stub.retirement,
-        stub.retirement_pct,
-        stub.total_deductions,
-        stub.employer_medical,
-        stub.employer_hsa,
-        stub.employer_total,
-        stub.net_pay,
-        stub.take_home_pct,
-        f"=SUM({gross_col}$2:{gross_col}{row_number})",
-        f"=SUM({net_col}$2:{net_col}{row_number})",
-        f"=SUM({bonus_col}$2:{bonus_col}{row_number})",
-    ]
+    pay_date = record["pay_date"]
+    values = {
+        "Pay date": pay_date.isoformat(),
+        "Month": calendar.month_name[pay_date.month],
+        "Change $": 0 if change is None else change,
+        "Change %": change_pct,
+        "Change type": change_type,
+        "YTD gross": _ytd_formula("Gross", row_number),
+        "YTD net": _ytd_formula("Net pay", row_number),
+        "YTD bonus": _ytd_formula("Bonus", row_number),
+    }
+    values.update({name: record.get(name, 0) for name in _STORED_FIELDS})
+    return [values[header] for header in _HEADERS]
+
+
+def _ytd_formula(header: str, row_number: int) -> str:
+    column = col_index_to_letter(_HEADERS.index(header))
+    return f"=SUM({column}$2:{column}{row_number})"
+
+
+def _previous_salary(records: list[dict], pay_date: date) -> float | None:
+    previous = None
+    for record in records:
+        if record["pay_date"] == pay_date:
+            return previous
+        previous = _cell_amount(record.get("Pay this check"))
+    return None
 
 
 def _reply(stub: PayStub, previous_pay: float | None, tab: str) -> str:
@@ -318,7 +371,8 @@ def _reply(stub: PayStub, previous_pay: float | None, tab: str) -> str:
         )
     )
     return (
-        f"Saved {stub.pay_date.isoformat()} on the {tab} tab. {change}.\n"
+        f"Saved {stub.pay_date.isoformat()} ({calendar.month_name[stub.pay_date.month]}) "
+        f"on the {tab} tab. {change}.\n"
         f"Annual salary ${stub.annual_salary:,.2f}\n"
         f"Gross ${stub.gross:,.2f}  Net ${stub.net_pay:,.2f}  "
         f"Take-home {stub.take_home_pct:.1%}\n"
@@ -460,20 +514,25 @@ _DEDUCTION_LINES = ("Medical", "Dental", "Vision", "HSA", "401K")
 
 def _load_checks(book: SheetsBackend) -> list[_Check]:
     checks: list[_Check] = []
-    end = col_index_to_letter(len(_HEADERS) - 1)
     for ws in book.list_worksheets():
         if not re.fullmatch(r"20\d{2}", ws.title):
             continue
+        header = _sheet_header(ws)
+        if not header or "Pay date" not in header:
+            continue
+        index = {name: position for position, name in enumerate(header)}
+        end = col_index_to_letter(len(header) - 1)
         for row in ws.get_values(f"A2:{end}"):
-            pay_date = _cell_date(row[0] if row else "")
+            pay_date = _cell_date(row[index["Pay date"]] if row else "")
             if pay_date is None:
                 continue
             values = {
-                header: _cell_amount(row[index] if index < len(row) else 0)
-                for index, header in enumerate(_HEADERS)
-                if header not in {"Pay date", "Change type"}
+                name: _cell_amount(row[position] if position < len(row) else 0)
+                for name, position in index.items()
+                if name not in {"Pay date", "Month", "Change type"}
             }
-            change = str(row[5]).strip() if len(row) > 5 else ""
+            change_at = index.get("Change type")
+            change = str(row[change_at]).strip() if change_at is not None and change_at < len(row) else ""
             checks.append(_Check(pay_date, values, change, values.get("Change %", 0.0)))
     return sorted(checks, key=lambda item: item.pay_date)
 
