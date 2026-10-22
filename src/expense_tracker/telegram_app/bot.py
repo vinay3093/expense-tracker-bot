@@ -83,7 +83,11 @@ _WELCOME_TEXT = (
     "  /trip summary\n"
     "  /trip close\n"
     "While a trip is active, each expense is also copied to that trip's sheet.\n"
-    "Add the word personal to keep one expense off the trip."
+    "Add the word personal to keep one expense off the trip.\n\n"
+    "Pay stub:\n"
+    "  sal: then paste the stub, or send the PDF with caption sal:\n"
+    "The bot stores the paycheck amounts only. It does not store the file, "
+    "SSN, or bank accounts."
 )
 
 
@@ -153,6 +157,11 @@ class MessageProcessor:
                 reply_text="(empty message — nothing to log)",
                 chat_turn=None,
             )
+        if cleaned.lower().startswith("sal:"):
+            return ProcessedMessage(
+                reply_text=self.record_salary(cleaned.split(":", 1)[1]),
+                chat_turn=None,
+            )
 
         trips = getattr(self._pipeline, "trips", None)
         if cleaned.lower().startswith("/trip") and trips is None:
@@ -189,6 +198,36 @@ class MessageProcessor:
                 trips.set_override(None)
 
         return self._with_mode(turn.bot_reply, turn)
+
+    def record_salary_for_user(self, user_id: int | None, text: str) -> str:
+        decision = self._auth.check(user_id)
+        if not decision.allowed:
+            return _format_auth_denied(decision)
+        return self.record_salary(text)
+
+    def record_salary(self, text: str) -> str:
+        """Parse a pay stub locally and update the Salary Review year tab."""
+        from ..config import get_settings
+        from ..salary import parse_paystub, save_paystub
+
+        stub = parse_paystub(text)
+        if stub is None:
+            return (
+                "I couldn't find the pay date and gross pay. "
+                "Paste the stub after sal:, or send the PDF with caption sal:."
+            )
+        trips = getattr(self._pipeline, "trips", None)
+        master = getattr(trips, "_master", None)
+        if master is None or getattr(master, "client", None) is None:
+            return "Salary updates need the live Sheets connection."
+        try:
+            book = _open_salary_book(master, get_settings().SALARY_SHEET_ID)
+        except Exception as exc:
+            return (
+                "I couldn't open Salary Review. Share that spreadsheet with "
+                f"the service account, then try again. ({type(exc).__name__})"
+            )
+        return save_paystub(book, stub)
 
     def process_callback(self, *, user_id: int | None, data: str) -> ProcessedMessage:
         decision = self._auth.check(user_id)
@@ -554,6 +593,14 @@ def _format_summary_for_telegram(summary: Summary) -> str:
 # (or don't want) python-telegram-bot installed.
 
 
+def _open_salary_book(master, sheet_id: str | None):
+    from ..ledger.sheets.gspread_backend import GspreadSheetsBackend
+
+    client = master.client
+    spreadsheet = client.open_by_key(sheet_id) if sheet_id else client.open("Salary Review")
+    return GspreadSheetsBackend(client=client, spreadsheet=spreadsheet)
+
+
 def _keyboard(buttons: tuple[tuple[str, str], ...]):
     if not buttons:
         return None
@@ -771,6 +818,39 @@ def make_edit_handler(processor: CorrectionProcessor):
         await _reply_safely(update, reply)
 
     return handle_edit
+
+
+def make_salary_pdf_handler(processor: MessageProcessor):
+    """A pay-stub PDF whose caption starts with sal:."""
+
+    async def handle_salary_pdf(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        msg = update.effective_message
+        if msg is None or msg.document is None:
+            return
+        caption = (msg.caption or "").strip()
+        if not caption.lower().startswith("sal"):
+            await msg.reply_text("Send the pay stub PDF with the caption sal:.")
+            return
+        user = update.effective_user
+        downloaded = await msg.document.get_file()
+        payload = await downloaded.download_as_bytearray()
+        from ..salary import pdf_text
+        try:
+            text = pdf_text(bytes(payload))
+        except Exception:
+            text = ""
+        reply = await asyncio.to_thread(
+            processor.record_salary_for_user,
+            user.id if user is not None else None,
+            text,
+        )
+        await msg.reply_text(reply)
+
+    return handle_salary_pdf
 
 
 def make_trip_handler(processor: MessageProcessor):

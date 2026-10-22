@@ -32,6 +32,8 @@ dependencies = [
     # Google Sheets client + service-account auth (Step 4).
     "gspread>=6.0,<7.0",
     "google-auth>=2.30,<3.0",
+    # Reads text out of a pay-stub PDF. The file is not stored.
+    "pypdf>=5.0,<7.0",
 ]
 
 # Optional providers + front-ends — install only when actually using them.

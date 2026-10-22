@@ -167,6 +167,13 @@ class Settings(BaseSettings):
             "set."
         ),
     )
+    SALARY_SHEET_ID: str | None = Field(
+        default=None,
+        description=(
+            "Spreadsheet ID for Salary Review. When empty, the bot opens "
+            "the spreadsheet titled 'Salary Review'."
+        ),
+    )
     EXPENSE_SHEET_ID: str | None = Field(
         default=None,
         description=(

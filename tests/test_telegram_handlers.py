@@ -245,8 +245,8 @@ def test_build_application_registers_expected_handlers() -> None:
     }
 
     message_handlers = [h for h in handlers if isinstance(h, MessageHandler)]
-    assert len(message_handlers) == 1, (
-        "expected exactly one MessageHandler (text), got "
+    assert len(message_handlers) == 2, (
+        "expected text and pay-stub PDF handlers, got "
         f"{len(message_handlers)}"
     )
 

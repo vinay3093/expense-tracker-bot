@@ -31,6 +31,7 @@ from .bot import (
     make_start_handler,
     make_summary_handler,
     make_mode_callback_handler,
+    make_salary_pdf_handler,
     make_text_handler,
     make_trip_handler,
     make_undo_handler,
@@ -220,6 +221,9 @@ def build_application(
     # Text messages that aren't commands flow through the chat pipeline.
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, make_text_handler(processor))
+    )
+    app.add_handler(
+        MessageHandler(filters.Document.PDF, make_salary_pdf_handler(processor))
     )
     app.add_handler(CallbackQueryHandler(make_mode_callback_handler(processor)))
     return app
