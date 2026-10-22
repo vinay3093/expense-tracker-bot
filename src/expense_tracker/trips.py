@@ -101,6 +101,7 @@ class TripService:
     def __init__(self, master: SheetsBackend, books: WorkbookFactory | None = None) -> None:
         self._master = master
         self._books = books or factory_for(master)
+        self._override: str | None = None
 
     def handle(self, text: str) -> str | None:
         """Return a reply when ``text`` is a trip command, else None."""
@@ -140,12 +141,76 @@ class TripService:
             return str(exc)
         return _HELP
 
+    def set_override(self, force: str | None) -> None:
+        """``daily`` or ``trip`` for the next expense only."""
+        self._override = force
+
     def attach_name(self, user_text: str) -> str | None:
         """Trip name to stamp on a new expense, or None."""
-        if _PERSONAL.search(user_text):
+        if self._override == "daily" or _PERSONAL.search(user_text):
             return None
+        if self._override == "trip":
+            chosen = self._active() or self._latest_open()
+            return chosen.name if chosen else None
         active = self._active()
         return active.name if active else None
+
+    def use_daily(self) -> str:
+        """Stop tagging new expenses. The trip stays open."""
+        active = self._active()
+        if active is not None:
+            self._set_status(active, "open")
+        return "Mode: Daily"
+
+    def use_trip(self, trip_id: str) -> str:
+        target = next((t for t in self._load() if t.trip_id == trip_id), None)
+        if target is None:
+            return "That trip is not on the list."
+        if target.status == "closed":
+            return f"{target.name} is closed."
+        current = self._active()
+        if current is not None and current.trip_id != target.trip_id:
+            self._set_status(current, "open")
+        self._set_status(target, "active")
+        return f"Mode: {target.name}"
+
+    def mode_line(self) -> str:
+        active = self._active()
+        return "Mode: Daily" if active is None else f"Mode: {active.name}"
+
+    def mode_buttons(self) -> list[tuple[str, str]]:
+        """(label, callback data) pairs for the Telegram keyboard."""
+        buttons = [("Daily", "mode:daily")]
+        open_trips = [t for t in self._load() if t.status != "closed"]
+        buttons.extend((t.name, f"mode:{t.trip_id}") for t in open_trips)
+        if open_trips:
+            buttons.append(("Last → Daily", "mv:daily"))
+            current = self._active() or open_trips[0]
+            buttons.append((f"Last → {current.name}", f"mv:{current.trip_id}"))
+        return buttons
+
+    def move_last(self, trip_id: str | None) -> str:
+        """Retag the latest daily-ledger row. None means daily-only."""
+        found = self._last_master_row()
+        if found is None:
+            return "No expense to move."
+        ws, row_index, raw = found
+        previous = str(raw[index_for("trip")]).strip() if index_for("trip") < len(raw) else ""
+        target = next((t for t in self._load() if t.trip_id == trip_id), None) if trip_id else None
+        if trip_id and target is None:
+            return "That trip is not on the list."
+        name = target.name if target else ""
+        ws.update_values(f"{col_for('trip')}{row_index}", [[name]])
+        from dataclasses import replace
+        row = replace(_row_from_cells(list(raw)), trip=name or None)
+        if target is not None and previous.lower() != name.lower():
+            self.project(row)
+        elif not target and previous:
+            old = self._by_name(previous)
+            if old is not None:
+                self._drop_trip_copy(old, row)
+        where = name or "Daily"
+        return f"Moved the last expense to {where}."
 
     def project(self, row: TransactionRow) -> str | None:
         """Copy one master row into its trip sheet. None means success."""
@@ -286,6 +351,31 @@ class TripService:
     def _active(self) -> Trip | None:
         return next((t for t in self._load() if t.status == "active"), None)
 
+    def _latest_open(self) -> Trip | None:
+        open_trips = [t for t in self._load() if t.status in {"open", "paused", "active"}]
+        return open_trips[-1] if open_trips else None
+
+    def _last_master_row(self):
+        if not self._master.has_worksheet("Transactions"):
+            return None
+        ws = self._master.get_worksheet("Transactions")
+        values = ws.get_values(f"A2:{col_for('trip')}")
+        found = None
+        for offset, raw in enumerate(values):
+            if raw and str(raw[0]).strip():
+                found = (ws, offset + 2, raw)
+        return found
+
+    def _drop_trip_copy(self, trip: Trip, row: TransactionRow) -> None:
+        book = self._books.open(trip.spreadsheet_id)
+        ws = book.get_worksheet("Transactions")
+        values = ws.get_values("A2:E")
+        for offset, raw in enumerate(values):
+            cells = list(raw) + [""] * 5
+            if str(cells[0]) == row.date.isoformat() and str(cells[1]) == row.category:
+                ws.delete_rows(offset + 2)
+                return
+
     def _by_name(self, name: str | None) -> Trip | None:
         if not name:
             return None
@@ -413,6 +503,15 @@ def _row_from_cells(raw: list) -> TransactionRow:
     )
 
 
+def split_override(text: str) -> tuple[str, str | None]:
+    """``d: rent`` forces daily; ``t: taxi`` forces the open trip."""
+    match = re.match(r"^([dt])\s*:\s*(.+)$", text.strip(), re.I)
+    if not match:
+        return text.strip(), None
+    force = "daily" if match.group(1).lower() == "d" else "trip"
+    return match.group(2).strip(), force
+
+
 def _url(spreadsheet_id: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
 
@@ -444,6 +543,6 @@ _HELP = (
     "  /trip switch Cali\n"
     "  /trip close\n"
     "  /trip sync\n"
-    "While a trip is active, normal expenses land on the daily sheet and the trip sheet.\n"
-    "Say 'personal' in the message to keep an expense off the trip."
+    "Buttons under each reply switch Daily and Trip.\n"
+    "d: internet 70 logs one expense as daily. t: taxi 20 logs one as the trip."
 )

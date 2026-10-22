@@ -30,6 +30,7 @@ from .bot import (
     make_last_handler,
     make_start_handler,
     make_summary_handler,
+    make_mode_callback_handler,
     make_text_handler,
     make_trip_handler,
     make_undo_handler,
@@ -147,6 +148,7 @@ def build_application(
     try:
         from telegram.ext import (
             ApplicationBuilder,
+            CallbackQueryHandler,
             CommandHandler,
             MessageHandler,
             filters,
@@ -219,6 +221,7 @@ def build_application(
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, make_text_handler(processor))
     )
+    app.add_handler(CallbackQueryHandler(make_mode_callback_handler(processor)))
     return app
 
 
@@ -270,10 +273,10 @@ def run_polling(
         await app.start()
         _log.info(
             "PTB bootstrap: start() complete — beginning updater long-poll "
-            "(drop_pending_updates=True, allowed=['message']) ..."
+            "(drop_pending_updates=True, allowed=['message', 'callback_query']) ..."
         )
         await app.updater.start_polling(
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=True,
         )
         _log.info(

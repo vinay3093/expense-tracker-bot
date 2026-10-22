@@ -49,6 +49,31 @@ def test_active_trip_projects_and_personal_does_not():
     assert master.title == "Daily"
 
 
+def test_daily_button_and_one_message_override():
+    from expense_tracker.ledger.sheets.transactions import col_for
+    from expense_tracker.trips import split_override
+
+    trips, master, _ = _service()
+    trips.handle("/trip create Cali 2026-11-01 2026-11-11 2500")
+    assert trips.attach_name("coffee 5") == "Cali"
+    assert trips.use_daily() == "Mode: Daily"
+    assert trips.attach_name("coffee 5") is None
+
+    text, force = split_override("t: taxi 20")
+    assert text == "taxi 20" and force == "trip"
+    trips.set_override(force)
+    assert trips.attach_name(text) == "Cali"
+    trips.set_override(None)
+
+    ws = master.create_worksheet("Transactions", rows=20, cols=16)
+    ws.update_values(f"A2:{col_for('trip')}2", [[
+        "2026-11-02", "Mon", "November", 2026, "Food", "", "",
+        12, "USD", 12, 1, "chat", "", "", "Cali",
+    ]])
+    assert trips.move_last(None) == "Moved the last expense to Daily."
+    assert ws.get_values(f"{col_for('trip')}2")[0][0] == ""
+
+
 def test_second_trip_pauses_the_first():
     trips, _, _ = _service()
     trips.handle("/trip create Cali 2026-11-01 2026-11-11 2500")

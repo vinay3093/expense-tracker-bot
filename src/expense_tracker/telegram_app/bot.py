@@ -118,6 +118,7 @@ class ProcessedMessage:
 
     reply_text: str
     chat_turn: ChatTurn | None  # None for auth-rejected / non-text updates
+    buttons: tuple[tuple[str, str], ...] = ()
 
 
 class MessageProcessor:
@@ -159,10 +160,15 @@ class MessageProcessor:
                 reply_text="Trips need the Sheets ledger.",
                 chat_turn=None,
             )
+        force = None
         if trips is not None:
+            from ..trips import split_override
+            cleaned, force = split_override(cleaned)
+            trips.set_override(force)
             trip_reply = trips.handle(cleaned)
             if trip_reply is not None:
-                return ProcessedMessage(reply_text=trip_reply, chat_turn=None)
+                trips.set_override(None)
+                return self._with_mode(trip_reply, None)
 
         try:
             turn = self._pipeline.chat(cleaned)
@@ -178,8 +184,40 @@ class MessageProcessor:
                 ),
                 chat_turn=None,
             )
+        finally:
+            if trips is not None:
+                trips.set_override(None)
 
-        return ProcessedMessage(reply_text=turn.bot_reply, chat_turn=turn)
+        return self._with_mode(turn.bot_reply, turn)
+
+    def process_callback(self, *, user_id: int | None, data: str) -> ProcessedMessage:
+        decision = self._auth.check(user_id)
+        if not decision.allowed:
+            return ProcessedMessage(reply_text=_format_auth_denied(decision), chat_turn=None)
+        trips = getattr(self._pipeline, "trips", None)
+        if trips is None:
+            return ProcessedMessage(reply_text="Trips need the Sheets ledger.", chat_turn=None)
+        if data == "mode:daily":
+            text = trips.use_daily()
+        elif data.startswith("mode:"):
+            text = trips.use_trip(data.split(":", 1)[1])
+        elif data == "mv:daily":
+            text = trips.move_last(None)
+        elif data.startswith("mv:"):
+            text = trips.move_last(data.split(":", 1)[1])
+        else:
+            text = "Unknown button."
+        return self._with_mode(text, None)
+
+    def _with_mode(self, text: str, turn: ChatTurn | None) -> ProcessedMessage:
+        trips = getattr(self._pipeline, "trips", None)
+        buttons: tuple[tuple[str, str], ...] = ()
+        if trips is not None:
+            line = trips.mode_line()
+            if line not in text:
+                text = f"{text}\n{line}"
+            buttons = tuple(trips.mode_buttons())
+        return ProcessedMessage(reply_text=text, chat_turn=turn, buttons=buttons)
 
 
 # ─── Correction processor (/last, /undo, /edit) ────────────────────────
@@ -516,13 +554,38 @@ def _format_summary_for_telegram(summary: Summary) -> str:
 # (or don't want) python-telegram-bot installed.
 
 
-async def _reply_safely(update: Update, text: str) -> None:
+def _keyboard(buttons: tuple[tuple[str, str], ...]):
+    if not buttons:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    row = []
+    for label, data in buttons:
+        row.append(InlineKeyboardButton(label, callback_data=data))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def _reply_safely(
+    update: Update,
+    text: str,
+    buttons: tuple[tuple[str, str], ...] = (),
+) -> None:
     """Reply to the message that triggered the update, if possible."""
     msg = update.effective_message
     if msg is None:  # pragma: no cover — defensive; shouldn't fire for text
         _log.warning("Update %s had no effective_message; cannot reply", update)
         return
-    await msg.reply_text(text, disable_web_page_preview=True)
+    await msg.reply_text(
+        text,
+        disable_web_page_preview=True,
+        reply_markup=_keyboard(buttons),
+    )
 
 
 async def _send_typing(update: Update) -> None:
@@ -578,7 +641,7 @@ def make_text_handler(processor: MessageProcessor):
                 user_id=user_id,
                 text=msg.text,
             )
-            await _reply_safely(update, result.reply_text)
+            await _reply_safely(update, result.reply_text, result.buttons)
         except Exception as exc:
             _log.exception(
                 "Pipeline raised on user %s message %r — replying "
@@ -729,9 +792,35 @@ def make_trip_handler(processor: MessageProcessor):
             user_id=user_id,
             text=msg.text.strip(),
         )
-        await _reply_safely(update, processed.reply_text)
+        await _reply_safely(update, processed.reply_text, processed.buttons)
 
     return handle_trip
+
+
+def make_mode_callback_handler(processor: MessageProcessor):
+    """Inline buttons: Daily, a trip, or move the last expense."""
+
+    async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        user = update.effective_user
+        user_id = user.id if user is not None else None
+        processed = await asyncio.to_thread(
+            processor.process_callback,
+            user_id=user_id,
+            data=query.data or "",
+        )
+        if query.message is not None:
+            await query.message.reply_text(
+                processed.reply_text,
+                disable_web_page_preview=True,
+                reply_markup=_keyboard(processed.buttons),
+            )
+
+    return handle_mode
 
 
 def make_summary_handler(processor: SummaryProcessor):
