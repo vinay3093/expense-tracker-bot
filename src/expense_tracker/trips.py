@@ -6,6 +6,7 @@ is a copy of the rows whose Trip cell matches that trip.
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 from dataclasses import dataclass
@@ -18,9 +19,10 @@ from .ledger.sheets.transactions import col_for, index_for
 _log = logging.getLogger(__name__)
 
 _TRIPS_TAB = "Trips"
+_VACATION_TITLE = "Travelling/Vacations"
 _REGISTRY = (
     "Trip ID", "Name", "Start", "End", "Budget", "Currency",
-    "Status", "Spreadsheet ID", "URL",
+    "Status", "Spreadsheet ID", "URL", "Tab",
 )
 _TRIP_TXN = ("Date", "Category", "Note", "Vendor", "Amount", "Currency", "Amount USD")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -39,6 +41,7 @@ class Trip:
     spreadsheet_id: str
     url: str
     row_index: int
+    tab: str = "Transactions"
 
 
 class WorkbookFactory:
@@ -73,13 +76,35 @@ class GspreadWorkbookFactory(WorkbookFactory):
     def create(self, title: str) -> tuple[SheetsBackend, str]:
         from .ledger.sheets.gspread_backend import GspreadSheetsBackend
 
-        sh = self._client.create(title)  # type: ignore[attr-defined]
+        try:
+            sh = self._client.create(title)  # type: ignore[attr-defined]
+        except Exception as exc:
+            if "quota" not in str(exc).lower() and "storage" not in str(exc).lower():
+                raise
+            return self._add_vacation_tab(title)
         try:
             sh.sheet1.update_title("Overview")
         except Exception:
             _log.warning("could not rename the new trip sheet's first tab")
         _share_with_master_editors(sh, self._master)
         book = GspreadSheetsBackend(client=self._client, spreadsheet=sh)
+        return book, _url(sh.id)
+
+    def _add_vacation_tab(self, title: str) -> tuple[SheetsBackend, str]:
+        from .ledger.sheets.gspread_backend import GspreadSheetsBackend
+
+        try:
+            sh = self._client.open(_VACATION_TITLE)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise ValueError(
+                "I couldn't open Travelling/Vacations. Share that spreadsheet "
+                "with the service account as Editor, then try again."
+            ) from exc
+        book = GspreadSheetsBackend(client=self._client, spreadsheet=sh)
+        names = {ws.title.strip().lower() for ws in book.list_worksheets()}
+        if title.strip().lower() in names:
+            raise ValueError(f"Travelling/Vacations already has a tab named {title}.")
+        book.create_worksheet(title, rows=500, cols=len(_TRIP_TXN))
         return book, _url(sh.id)
 
     def open(self, spreadsheet_id: str) -> SheetsBackend:
@@ -237,21 +262,27 @@ class TripService:
         if paused is not None:
             self._set_status(paused, "paused")
         trip_id = self._new_id(name, start)
-        title = f"Trip - {name}"
+        title = _trip_tab_title(name, start)
         book, url = self._books.create(title)
+        tab = title if book.has_worksheet(title) else "Transactions"
         trip = Trip(
             trip_id=trip_id, name=name, start=start, end=end,
             budget=budget, currency=currency.upper(), status="active",
             spreadsheet_id=getattr(book, "spreadsheet_id", ""),
-            url=url, row_index=0,
+            url=url, row_index=0, tab=tab,
         )
-        _build_trip_workbook(book, trip)
+        if tab == "Transactions":
+            _build_trip_workbook(book, trip)
+        else:
+            book.get_worksheet(tab).update_values("A1:G1", [list(_TRIP_TXN)])
         self._append_registry(trip)
         lines = [
             f"Trip {name} is active ({start} to {end}).",
             f"Budget: {budget:,.2f} {currency.upper()}",
-            url,
         ]
+        if tab != "Transactions":
+            lines.append(f"Tab: {tab}")
+        lines.append(url)
         if paused is not None:
             lines.insert(1, f"{paused.name} is paused.")
         return "\n".join(lines)
@@ -320,18 +351,24 @@ class TripService:
     # ─── registry + sheets ─────────────────────────────────────────────
 
     def _ensure_registry(self):
+        header = [list(_REGISTRY)]
         if not self._master.has_worksheet(_TRIPS_TAB):
             ws = self._master.create_worksheet(_TRIPS_TAB, rows=100, cols=len(_REGISTRY))
-            ws.update_values("A1:I1", [_REGISTRY])
-        return self._master.get_worksheet(_TRIPS_TAB)
+            ws.update_values("A1:J1", header)
+            return ws
+        ws = self._master.get_worksheet(_TRIPS_TAB)
+        found = ws.get_values("J1")
+        if not found or str(found[0][0]).strip() != "Tab":
+            ws.update_values("J1", [["Tab"]])
+        return ws
 
     def _load(self) -> list[Trip]:
         if not self._master.has_worksheet(_TRIPS_TAB):
             return []
-        values = self._ensure_registry().get_values("A2:I")
+        values = self._ensure_registry().get_values("A2:J")
         trips: list[Trip] = []
         for offset, raw in enumerate(values):
-            cells = list(raw) + [""] * (9 - len(raw))
+            cells = list(raw) + [""] * (10 - len(raw))
             if not str(cells[0]).strip():
                 continue
             trips.append(Trip(
@@ -345,6 +382,7 @@ class TripService:
                 spreadsheet_id=str(cells[7]),
                 url=str(cells[8]),
                 row_index=offset + 2,
+                tab=str(cells[9] or "Transactions"),
             ))
         return trips
 
@@ -367,8 +405,7 @@ class TripService:
         return found
 
     def _drop_trip_copy(self, trip: Trip, row: TransactionRow) -> None:
-        book = self._books.open(trip.spreadsheet_id)
-        ws = book.get_worksheet("Transactions")
+        ws = self._trip_worksheet(trip)
         values = ws.get_values("A2:E")
         for offset, raw in enumerate(values):
             cells = list(raw) + [""] * 5
@@ -385,7 +422,7 @@ class TripService:
     def _append_registry(self, trip: Trip) -> None:
         self._ensure_registry().append_rows([[
             trip.trip_id, trip.name, trip.start, trip.end, trip.budget,
-            trip.currency, trip.status, trip.spreadsheet_id, trip.url,
+            trip.currency, trip.status, trip.spreadsheet_id, trip.url, trip.tab,
         ]])
 
     def _set_status(self, trip: Trip, status: str) -> None:
@@ -416,18 +453,18 @@ class TripService:
             out.append(_row_from_cells(raw))
         return out
 
+    def _trip_worksheet(self, trip: Trip):
+        return self._books.open(trip.spreadsheet_id).get_worksheet(trip.tab or "Transactions")
+
     def _append_trip_row(self, trip: Trip, row: TransactionRow) -> None:
-        book = self._books.open(trip.spreadsheet_id)
-        ws = book.get_worksheet("Transactions")
+        ws = self._trip_worksheet(trip)
         ws.append_rows([[
             row.date.isoformat(), row.category, row.note or "", row.vendor or "",
             row.amount, row.currency, row.amount_usd,
         ]])
 
     def _already_copied(self, trip: Trip, row: TransactionRow) -> bool:
-        book = self._books.open(trip.spreadsheet_id)
-        ws = book.get_worksheet("Transactions")
-        for raw in ws.get_values("A2:G"):
+        for raw in self._trip_worksheet(trip).get_values("A2:G"):
             cells = list(raw) + [""] * 7
             if (
                 str(cells[0]) == row.date.isoformat()
@@ -458,6 +495,12 @@ def _build_trip_workbook(book: SheetsBackend, trip: Trip) -> None:
         ["Remaining", "=B4-B5"],
         ["Status", "active"],
     ])
+
+
+def _trip_tab_title(name: str, start: str) -> str:
+    """Match the vacation workbook's tab names, such as ``California, October 2026``."""
+    on = date.fromisoformat(start)
+    return f"{name}, {calendar.month_name[on.month]} {on.year}"
 
 
 def _parse_create(rest: str) -> tuple[str, str, str, float, str]:

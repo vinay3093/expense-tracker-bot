@@ -83,3 +83,34 @@ def test_second_trip_pauses_the_first():
     switched = trips.handle("/trip switch Cali")
     assert switched is not None and switched.startswith("Cali is the active trip")
     assert trips.attach_name("coffee 6") == "Cali"
+
+
+def test_trip_tab_is_added_to_the_vacation_workbook():
+    master = FakeSheetsBackend(title="Daily")
+    vacation = FakeSheetsBackend(title="Travelling/Vacations", spreadsheet_id="vacation")
+
+    class _VacationBooks:
+        def create(self, title: str):
+            vacation.create_worksheet(title, rows=50, cols=8)
+            return vacation, "https://docs.google.com/spreadsheets/d/vacation/edit"
+
+        def open(self, spreadsheet_id: str):
+            assert spreadsheet_id == "vacation"
+            return vacation
+
+    trips = TripService(master, _VacationBooks())
+    reply = trips.handle("/trip create California 2026-10-24 2026-11-02 3500")
+    assert reply is not None
+    assert "Tab: California, October 2026" in reply
+    assert vacation.has_worksheet("California, October 2026")
+    assert not master.has_worksheet("California, October 2026")
+
+    row = TransactionRow(
+        date=date(2026, 10, 25), day="Sun", month="October", year=2026,
+        category="Food", note=None, vendor="Dinner",
+        amount=40, currency="USD", amount_usd=40, fx_rate=1,
+        trip="California",
+    )
+    assert trips.project(row) is None
+    copied = vacation.get_worksheet("California, October 2026").get_values("A2:B2")
+    assert copied[0] == ["2026-10-25", "Food"]
