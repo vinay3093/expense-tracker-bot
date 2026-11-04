@@ -55,13 +55,9 @@ class Settings(BaseSettings):
 
     # ─── Groq (primary, free tier, OpenAI-compatible) ───────────────────────
     GROQ_API_KEY: SecretStr | None = Field(default=None)
-    # 2026-06-25: Groq deprecated `llama-3.1-8b-instant` (decommission
-    # 2026-08-16).  Switched the default to `openai/gpt-oss-20b` — Groq's
-    # recommended replacement; OpenAI-compatible JSON mode, identical
-    # 30 RPM / 6K TPM free-tier limits, larger model (20B vs 8B) →
-    # slightly more reliable on structured JSON, ~2x throughput on Groq's
-    # custom silicon.
-    GROQ_MODEL: str = Field(default="openai/gpt-oss-20b")
+    # Free-tier chat model. `openai/gpt-oss-120b` is Groq's larger free
+    # replacement for the retired Llama 70B. Same API key and JSON mode.
+    GROQ_MODEL: str = Field(default="openai/gpt-oss-120b")
 
     # ─── Ollama (local, offline fallback) ───────────────────────────────────
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")

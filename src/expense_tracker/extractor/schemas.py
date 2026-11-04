@@ -12,7 +12,7 @@ schemas rather than a single discriminated-union type. Reasons:
 
 1. Each gets its own focused extraction prompt — empirically more
    reliable on small models (validated against ``llama-3.1-8b-instant``
-   prior to its 2026-06-25 deprecation, now ``openai/gpt-oss-20b``).
+   prior to its 2026-06-25 deprecation, now ``openai/gpt-oss-120b``).
 2. Schema-mismatch errors point at exactly one field's type.
 3. The high-level :class:`ExtractionResult` carries the discriminator
    (``intent``) and *either* the expense *or* the query payload, never

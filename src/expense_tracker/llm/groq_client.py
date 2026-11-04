@@ -52,7 +52,7 @@ class GroqClient:
         api_key: str,
         # Mirrors the default in expense_tracker.config.Settings — keep in
         # sync.  See that file's comment for the 2026-06-25 migration note.
-        model: str = "openai/gpt-oss-20b",
+        model: str = "openai/gpt-oss-120b",
         timeout_s: float = 30.0,
         max_retries: int = 3,
         default_temperature: float = 0.1,
