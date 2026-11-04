@@ -101,7 +101,11 @@ _WELCOME_TEXT = (
     "  sal: tax breakdown\n"
     "  sal: hikes\n"
     "The bot stores the paycheck amounts only. It does not store the file, "
-    "SSN, or bank accounts."
+    "SSN, or bank accounts.\n\n"
+    "Rent:\n"
+    "  rent entry, then paste the statement, or send the PDF with that caption\n"
+    "  rent entry water 45.03 for November 2026\n"
+    "Rent lines go to the rent spreadsheet, not the daily expense sheet."
 )
 
 
@@ -174,6 +178,12 @@ class MessageProcessor:
         if cleaned.lower().startswith("sal:"):
             return ProcessedMessage(
                 reply_text=self.record_salary(cleaned.split(":", 1)[1]),
+                chat_turn=None,
+            )
+        from ..rent import is_rent_text
+        if is_rent_text(cleaned):
+            return ProcessedMessage(
+                reply_text=self.record_rent(cleaned),
                 chat_turn=None,
             )
 
@@ -249,6 +259,43 @@ class MessageProcessor:
         if stub is not None:
             return save_paystub(book, stub)
         return query_salary(book, text)
+
+    def record_rent_for_user(self, user_id: int | None, text: str) -> str:
+        decision = self._auth.check(user_id)
+        if not decision.allowed:
+            return _format_auth_denied(decision)
+        return self.record_rent(text)
+
+    def record_rent(self, text: str) -> str:
+        """Save a rent statement or one rent charge on the rent spreadsheet."""
+        from ..config import get_settings
+        from ..rent import (
+            parse_rent_statement,
+            parse_rent_update,
+            rent_sheet_id,
+            save_rent,
+            share_hint,
+        )
+
+        months = parse_rent_statement(text)
+        if not months:
+            update = parse_rent_update(text)
+            months = [update] if update is not None else []
+        if not months:
+            from ..rent import _HELP
+            return _HELP  # statement text had no rent lines
+        trips = getattr(self._pipeline, "trips", None)
+        master = getattr(trips, "_master", None)
+        if master is None or getattr(master, "client", None) is None:
+            return "Rent updates need the live Sheets connection."
+        try:
+            book = _open_salary_book(master, rent_sheet_id(get_settings().RENT_SHEET_ID))
+        except Exception:
+            return share_hint()
+        try:
+            return save_rent(book, months)
+        except Exception as exc:
+            return f"I couldn't write the rent sheet. {type(exc).__name__}"
 
     def process_callback(self, *, user_id: int | None, data: str) -> ProcessedMessage:
         decision = self._auth.check(user_id)
@@ -853,22 +900,26 @@ def make_salary_pdf_handler(processor: MessageProcessor):
         if msg is None or msg.document is None:
             return
         caption = (msg.caption or "").strip()
-        if not caption.lower().startswith("sal"):
-            await msg.reply_text("Send the pay stub PDF with the caption sal:.")
+        lowered = caption.lower()
+        rent_pdf = lowered.startswith("rent")
+        if not lowered.startswith("sal") and not rent_pdf:
+            await msg.reply_text("Send the PDF with the caption sal: or rent entry.")
             return
         user = update.effective_user
         downloaded = await msg.document.get_file()
         payload = await downloaded.download_as_bytearray()
-        from ..salary import pdf_text
+        user_id = user.id if user is not None else None
+        if rent_pdf:
+            from ..rent import pdf_text
+            record = processor.record_rent_for_user
+        else:
+            from ..salary import pdf_text
+            record = processor.record_salary_for_user
         try:
             text = pdf_text(bytes(payload))
         except Exception:
             text = ""
-        reply = await asyncio.to_thread(
-            processor.record_salary_for_user,
-            user.id if user is not None else None,
-            text,
-        )
+        reply = await asyncio.to_thread(record, user_id, text)
         await msg.reply_text(reply)
 
     return handle_salary_pdf

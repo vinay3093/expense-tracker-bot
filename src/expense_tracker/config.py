@@ -174,6 +174,13 @@ class Settings(BaseSettings):
             "the spreadsheet titled 'Salary Review'."
         ),
     )
+    RENT_SHEET_ID: str | None = Field(
+        default=None,
+        description=(
+            "Spreadsheet ID for apartment rent. When empty, the bot opens "
+            "the rent spreadsheet shared with the service account."
+        ),
+    )
     EXPENSE_SHEET_ID: str | None = Field(
         default=None,
         description=(
