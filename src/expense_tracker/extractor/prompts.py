@@ -34,6 +34,11 @@ Be conservative on confidence: if the message could be either log_expense or
 a query, prefer the one most users mean by that phrasing. Use 'unclear' only
 when you cannot tell at all — never guess.
 
+Never classify these as log_expense. They are commands, not new spends:
+delete, undo, edit, or change an expense number; switch, resume, or end a
+trip; salary, paycheck, gross pay, or net pay questions; a rent statement.
+If one of those reaches you, use unclear.
+
 Respond ONLY with JSON of the requested shape — never with prose, never with
 markdown fences."""
 

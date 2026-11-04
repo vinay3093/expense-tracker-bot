@@ -94,3 +94,20 @@ def test_chat_commands_find_switch_show_and_delete():
     assert "Deleted" in deleted
     assert handle_chat_action("what is expense 2", pipeline) == "No expense #2."
     assert handle_chat_action("spent 40 on coffee", pipeline) is None
+    assert handle_chat_action("go to daily", pipeline) == "Mode: Daily"
+
+
+def test_plain_sentences_reach_salary_and_trip_create():
+    from expense_tracker.extractor.prompts import INTENT_SYSTEM
+    from expense_tracker.ledger.sheets import FakeSheetsBackend
+    from expense_tracker.salary import is_salary_text
+    from expense_tracker.trips import InMemoryWorkbookFactory, TripService
+
+    assert is_salary_text("what was my gross pay for 2026")
+    assert is_salary_text("spent 40 on coffee") is False
+    assert "Never classify" in INTENT_SYSTEM
+    trips = TripService(FakeSheetsBackend(title="Daily"), InMemoryWorkbookFactory())
+    reply = trips.handle(
+        "make a California trip from 2026-10-24 to 2026-11-02 budget 3500"
+    )
+    assert reply is not None and "California is active" in reply

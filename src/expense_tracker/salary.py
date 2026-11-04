@@ -183,6 +183,26 @@ def save_paystub(book: SheetsBackend, stub: PayStub) -> str:
     return _reply(stub, previous_pay, title)
 
 
+def is_salary_text(text: str) -> bool:
+    """True when the message is about pay, not a daily expense."""
+    low = " ".join(text.lower().split())
+    if low.startswith("sal:") or low.startswith("sal "):
+        return True
+    if re.search(r"\b(spent|paid|bought|cost)\b", low) and not re.search(
+        r"\b(pay stub|paystub|paycheck|gross pay|net pay)\b", low
+    ):
+        return False
+    if re.search(
+        r"\b(pay stub|paystub|paycheck|pay check|gross pay|net pay|take-home|take home|annual salary)\b",
+        low,
+    ):
+        return True
+    return bool(
+        re.search(r"\b(salary|hike|raise)\b", low)
+        and re.search(r"\b(pay|tax|gross|net|year|month|20\d{2})\b", low)
+    )
+
+
 def query_salary(book: SheetsBackend, question: str, *, today: date | None = None) -> str:
     """Answer a salary question from the year tabs. No model call is used."""
     question = question.strip()

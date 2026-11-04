@@ -175,9 +175,11 @@ class MessageProcessor:
                 reply_text="(empty message — nothing to log)",
                 chat_turn=None,
             )
-        if cleaned.lower().startswith("sal:"):
+        from ..salary import is_salary_text
+        if is_salary_text(cleaned):
+            body = cleaned.split(":", 1)[1] if cleaned.lower().startswith("sal:") else cleaned
             return ProcessedMessage(
-                reply_text=self.record_salary(cleaned.split(":", 1)[1]),
+                reply_text=self.record_salary(body),
                 chat_turn=None,
             )
         from ..rent import is_rent_text

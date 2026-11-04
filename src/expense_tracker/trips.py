@@ -134,8 +134,8 @@ class TripService:
         lower = body.lower()
         if lower.startswith("/trip"):
             body = body.split(None, 1)[1] if " " in body else "help"
-        elif _DATE.search(body) and lower.startswith("create"):
-            body = body
+        elif _DATE.search(body) and "trip" in lower and re.search(r"\b(create|start|make|add)\b", lower):
+            body = "create " + body
         elif lower in {"end trip", "end the trip", "close trip", "close the trip"}:
             body = "close"
         elif lower in {"trip summary", "trip status"}:
@@ -634,9 +634,17 @@ def _parse_create(rest: str) -> tuple[str, str, str, float, str]:
     start, end = dates[0], dates[1]
     if date.fromisoformat(end) < date.fromisoformat(start):
         raise ValueError("Trip end date is before the start date.")
-    name = rest.split(start, 1)[0]
-    name = re.sub(r"^(?:a )?trip(?: to| called)?\s+", "", name.strip(), flags=re.I)
-    name = re.sub(r"\s+from$", "", name, flags=re.I).strip(" -")
+    name = rest.split(start, 1)[0].strip()
+    name = re.sub(
+        r"^(?:create|start|make|add)\s+(?:a\s+|the\s+)?(?:new\s+)?",
+        "",
+        name,
+        flags=re.I,
+    )
+    name = re.sub(r"^(?:a|the)\s+", "", name, flags=re.I)
+    name = re.sub(r"\s+from$", "", name, flags=re.I)
+    name = re.sub(r"\s+trip$", "", name, flags=re.I)
+    name = re.sub(r"^(?:a )?trip(?: to| called)?\s+", "", name, flags=re.I).strip(" -")
     if not name:
         raise ValueError("Give the trip a name before the dates.")
     tail = rest.split(end, 1)[1]

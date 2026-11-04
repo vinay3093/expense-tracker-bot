@@ -36,7 +36,7 @@ def handle_chat_action(text: str, pipeline: object) -> str | None:
             return "Trips need the Sheets ledger."
         return trips.use_daily()
 
-    switched = _trip_label(low, ("switch to", "resume", "go back to", "back to", "open"))
+    switched = _trip_label(low, ("switch to", "switch back to", "resume", "go back to", "back to", "go to", "move to", "open", "use"))
     if switched is not None:
         return _resume(pipeline, switched)
 
@@ -69,7 +69,7 @@ def handle_chat_action(text: str, pipeline: object) -> str | None:
 
 def _is_daily(low: str) -> bool:
     return bool(re.search(
-        r"\b(switch to daily|back to daily|daily mode|use daily|only daily|log to daily)\b",
+        r"\b(switch to daily|back to daily|go to daily|daily mode|use daily|only daily|log to daily|daily only)\b",
         low,
     ))
 
@@ -81,6 +81,10 @@ def _trip_label(low: str, prefixes: tuple[str, ...]) -> str | None:
             label = re.sub(r"^(the|a|an)\s+", "", label)
             label = re.sub(r"\s+trip$", "", label)
             if label in {"daily", "daily expense", "daily expenses"}:
+                return None
+            if len(label.split()) > 4:
+                return None
+            if re.search(r"\d", label) and not re.search(r"\b20\d{2}\b", label):
                 return None
             return label
     return None
