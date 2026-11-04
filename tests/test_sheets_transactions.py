@@ -34,10 +34,12 @@ def test_columns_have_unique_keys_and_headers():
 
 
 def test_index_for_known_keys():
-    # Date stays leftmost. Trip is appended at the right so old rows still parse.
+    # Date stays leftmost. New id columns are appended after Trip.
     assert transactions_index_for("date") == 0
     assert transactions_index_for("category") == 4
-    assert transactions_index_for("trip") == len(TRANSACTIONS_COLUMNS) - 1
+    assert transactions_index_for("trip") == len(TRANSACTIONS_COLUMNS) - 3
+    assert transactions_index_for("expense_no") == len(TRANSACTIONS_COLUMNS) - 2
+    assert transactions_index_for("expense_uid") == len(TRANSACTIONS_COLUMNS) - 1
 
 
 def test_index_for_unknown_raises():

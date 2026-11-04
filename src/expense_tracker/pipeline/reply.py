@@ -107,6 +107,8 @@ def _reply_logged(result: ExtractionResult, log_result: LogResult) -> str:
 
     if row.trip:
         line += f" on trip {row.trip}"
+    if row.expense_no is not None:
+        line += f". Expense #{row.expense_no}"
     line += f". Tab: {log_result.monthly_tab}"
     if log_result.monthly_tab_created:
         line += " (newly created)"

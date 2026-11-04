@@ -110,6 +110,10 @@ class TransactionRow:
     timestamp: datetime | None = None
     trip: str | None = None
     """Name of the trip this expense belongs to; ``None`` for everyday spend."""
+    expense_no: int | None = None
+    """Spoken number. Assigned once, never reused or renumbered."""
+    expense_uid: str | None = None
+    """Hidden permanent id. Stable if these rows move into a database."""
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,8 @@ class LedgerRow:
     trace_id: str | None
     timestamp: datetime | None
     trip: str | None = None
+    expense_no: int | None = None
+    expense_uid: str | None = None
 
 
 @dataclass(frozen=True)

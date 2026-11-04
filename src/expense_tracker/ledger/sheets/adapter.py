@@ -172,23 +172,11 @@ class SheetsLedgerBackend:
         """
         if not rows:
             return []
-        ws = append_transactions(self._backend, self._format, list(rows))
-        # Indices = (current row count) - (rows we just added) + ... + (current row count).
-        # ``get_values`` on a single date column gives an accurate count
-        # without pulling the full row payload.
-        date_col_letter = "A"  # ``date`` is always column A; see TRANSACTIONS_COLUMNS.
-        date_values = ws.get_values(f"{date_col_letter}2:{date_col_letter}")
-        # Trim trailing blank rows that the Sheets API can pad with.
-        last_filled_offset: int = -1
-        for i, r in enumerate(date_values):
-            cell = r[0] if r else ""
-            if cell not in ("", None):
-                last_filled_offset = i
-        if last_filled_offset == -1:
-            return []
-        end_sheet_row = 2 + last_filled_offset
-        start_sheet_row = end_sheet_row - len(rows) + 1
-        return list(range(start_sheet_row, end_sheet_row + 1))
+        from .identity import sync_append
+
+        placed, indexes = sync_append(self._backend, self._format, list(rows))
+        self.last_appended = placed
+        return indexes
 
     def recompute_period(
         self,
@@ -366,6 +354,8 @@ def _parse_sheets_row(
         trace_id=_optional_str(_at("trace_id")),
         timestamp=timestamp,
         trip=_optional_str(_at("trip")),
+        expense_no=_optional_int(_at("expense_no")),
+        expense_uid=_optional_str(_at("expense_uid")),
     )
 
 
@@ -389,6 +379,15 @@ def _optional_str(raw: Any) -> str | None:
         return None
     s = str(raw).strip()
     return s or None
+
+
+def _optional_int(raw: Any) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return int(float(str(raw).replace(",", "").strip()))
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_number(raw: Any, *, default: float) -> float | None:

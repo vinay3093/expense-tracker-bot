@@ -24,7 +24,7 @@ _REGISTRY = (
     "Trip ID", "Name", "Start", "End", "Budget", "Currency",
     "Status", "Spreadsheet ID", "URL", "Tab",
 )
-_TRIP_TXN = ("Date", "Category", "Note", "Vendor", "Amount", "Currency", "Amount USD")
+_TRIP_TXN = ("Date", "Category", "Note", "Vendor", "Amount", "Currency", "Amount USD", "Expense")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PERSONAL = re.compile(r"\b(personal|not the trip|not a trip|no trip)\b", re.I)
 
@@ -187,6 +187,103 @@ class TripService:
             self._set_status(active, "open")
         return "Mode: Daily"
 
+    def resume(self, label: str) -> str:
+        """Switch to a trip by name, and by year when two share a name."""
+        target, message = self._match_label(label)
+        if target is None:
+            return message
+        return self.use_trip(target.trip_id)
+
+    def close_named(self, label: str) -> str:
+        target, message = self._match_label(label)
+        if target is None:
+            return message
+        self._set_status(target, "closed")
+        return f"Closed {target.name} ({target.start[:4]}). It cannot be switched back on."
+
+    def _match_label(self, label: str) -> tuple[Trip | None, str]:
+        name, year = _split_label(label)
+        if not name:
+            return None, "Which trip?"
+        matches = [
+            trip for trip in self._load()
+            if trip.name.lower() == name.lower()
+            and (year is None or trip.start.startswith(year))
+        ]
+        if not matches:
+            return None, f"No trip named {name}."
+        if len(matches) > 1:
+            years = ", ".join(sorted({trip.start[:4] for trip in matches}))
+            return None, f"Which {name}? I have {years}. Say switch to {name} and the year."
+        return matches[0], ""
+
+    def stamp_copies(self, name: str, expenses: list[object]) -> None:
+        """Copy spoken numbers onto the trip tab without changing other cells."""
+        trip = self._by_name(name)
+        if trip is None:
+            return
+        try:
+            ws = self._trip_worksheet(trip)
+        except Exception:
+            return
+        self._ensure_trip_header(ws)
+        rows = ws.get_values("A2:H")
+        used: set[int] = set()
+        for offset, raw in enumerate(rows):
+            cells = list(raw) + [""] * 8
+            if str(cells[7]).strip():
+                continue
+            for expense in expenses:
+                marker = id(expense)
+                if marker in used:
+                    continue
+                when = getattr(expense, "when", None)
+                amount = getattr(expense, "amount", None)
+                if when is None or amount is None:
+                    continue
+                same_day = str(cells[0])[:10] == when.isoformat()
+                same_kind = str(cells[1]).strip() == str(getattr(expense, "category", ""))
+                try:
+                    same_amount = abs(float(cells[4] or 0) - float(amount)) < 0.02
+                except (TypeError, ValueError):
+                    same_amount = False
+                if same_day and same_kind and same_amount:
+                    ws.update_values(f"H{offset + 2}", [[getattr(expense, "expense_no")]])
+                    used.add(marker)
+                    break
+
+    def update_copy(
+        self,
+        name: str,
+        expense_no: int,
+        *,
+        amount: float | None = None,
+        category: str | None = None,
+        when: str = "",
+    ) -> None:
+        trip = self._by_name(name)
+        if trip is None:
+            return
+        try:
+            ws = self._trip_worksheet(trip)
+        except Exception:
+            return
+        for offset, raw in enumerate(ws.get_values("A2:H")):
+            cells = list(raw) + [""] * 8
+            numbered = str(cells[7]).strip() in {str(expense_no), f"{expense_no}.0"}
+            same_row = when and str(cells[0])[:10] == when
+            if not numbered and not same_row:
+                continue
+            row_no = offset + 2
+            if amount is not None:
+                ws.update_values(f"E{row_no}", [[amount]])
+                ws.update_values(f"G{row_no}", [[amount]])
+            if category is not None:
+                ws.update_values(f"B{row_no}", [[category]])
+            if not numbered:
+                ws.update_values(f"H{row_no}", [[expense_no]])
+            return
+
     def use_trip(self, trip_id: str) -> str:
         target = next((t for t in self._load() if t.trip_id == trip_id), None)
         if target is None:
@@ -287,7 +384,7 @@ class TripService:
         if tab == "Transactions":
             _build_trip_workbook(book, trip)
         else:
-            book.get_worksheet(tab).update_values("A1:G1", [list(_TRIP_TXN)])
+            book.get_worksheet(tab).update_values("A1:H1", [list(_TRIP_TXN)])
         self._append_registry(trip)
         lines = [
             f"Trip {name} is active ({start} to {end}).",
@@ -419,10 +516,15 @@ class TripService:
 
     def _drop_trip_copy(self, trip: Trip, row: TransactionRow) -> None:
         ws = self._trip_worksheet(trip)
-        values = ws.get_values("A2:E")
+        values = ws.get_values("A2:H")
         for offset, raw in enumerate(values):
-            cells = list(raw) + [""] * 5
-            if str(cells[0]) == row.date.isoformat() and str(cells[1]) == row.category:
+            cells = list(raw) + [""] * 8
+            same_number = (
+                row.expense_no is not None
+                and str(cells[7]).strip() in {str(row.expense_no), f"{row.expense_no}.0"}
+            )
+            same_row = str(cells[0])[:10] == row.date.isoformat() and str(cells[1]) == row.category
+            if same_number or same_row:
                 ws.delete_rows(offset + 2)
                 return
 
@@ -469,11 +571,20 @@ class TripService:
     def _trip_worksheet(self, trip: Trip):
         return self._books.open(trip.spreadsheet_id).get_worksheet(trip.tab or "Transactions")
 
+    def _ensure_trip_header(self, ws) -> None:
+        header = ws.get_values("A1:H1")
+        actual = list(header[0]) if header else []
+        if actual[:8] == list(_TRIP_TXN):
+            return
+        if not actual or actual[:7] == list(_TRIP_TXN[:7]):
+            ws.update_values("A1:H1", [list(_TRIP_TXN)])
+
     def _append_trip_row(self, trip: Trip, row: TransactionRow) -> None:
         ws = self._trip_worksheet(trip)
+        self._ensure_trip_header(ws)
         ws.append_rows([[
             row.date.isoformat(), row.category, row.note or "", row.vendor or "",
-            row.amount, row.currency, row.amount_usd,
+            row.amount, row.currency, row.amount_usd, row.expense_no or "",
         ]])
 
     def _already_copied(self, trip: Trip, row: TransactionRow) -> bool:
@@ -494,7 +605,7 @@ class TripService:
 
 def _build_trip_workbook(book: SheetsBackend, trip: Trip) -> None:
     tx = book.create_worksheet("Transactions", rows=500, cols=len(_TRIP_TXN))
-    tx.update_values("A1:G1", [_TRIP_TXN])
+    tx.update_values("A1:H1", [list(_TRIP_TXN)])
     if book.has_worksheet("Overview"):
         ov = book.get_worksheet("Overview")
     else:
@@ -566,6 +677,18 @@ def split_override(text: str) -> tuple[str, str | None]:
         return text.strip(), None
     force = "daily" if match.group(1).lower() == "d" else "trip"
     return match.group(2).strip(), force
+
+
+def _split_label(label: str) -> tuple[str, str | None]:
+    """'California 2026' -> ('California', '2026'). 'California' -> ('California', None)."""
+    text = label.strip().strip(".,!")
+    for word in ("trip", "the", "mode", "to"):
+        if text.lower().startswith(word + " "):
+            text = text.split(" ", 1)[1].strip()
+    parts = text.split()
+    if parts and parts[-1].isdigit() and len(parts[-1]) == 4:
+        return " ".join(parts[:-1]), parts[-1]
+    return text, None
 
 
 def _url(spreadsheet_id: str) -> str:

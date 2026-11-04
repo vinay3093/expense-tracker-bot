@@ -69,11 +69,18 @@ _WELCOME_TEXT = (
     "  • how much for food this month?\n"
     "  • what did I spend on 24 April?\n"
     "  • show last 5 transactions\n\n"
-    "Fix the last entry:\n"
-    "  /undo                  delete the last logged expense\n"
-    "  /edit amount 50        change the amount to 50\n"
-    "  /edit category Food    change the category (aliases OK)\n"
-    "  /last                  show the last entry without changing it\n\n"
+    "Fix any expense by its number:\n"
+    "  delete the last expense\n"
+    "  delete expense 12\n"
+    "  what is expense 12\n"
+    "  change expense 12 to 50\n"
+    "  change expense 12 category to Food\n"
+    "  show me August 2025\n"
+    "  show me the California trip so far\n"
+    "  switch to daily\n"
+    "  switch to California 2026\n"
+    "  end the California trip\n"
+    "  /undo and /edit still change the latest row\n\n"
     "See how you're tracking:\n"
     "  /summary               last 7 days vs the 7 before that\n"
     "  /summary month         this month so far vs last month thru same day\n"
@@ -169,6 +176,11 @@ class MessageProcessor:
                 reply_text=self.record_salary(cleaned.split(":", 1)[1]),
                 chat_turn=None,
             )
+
+        from ..chat_actions import handle_chat_action
+        acted = handle_chat_action(cleaned, self._pipeline)
+        if acted is not None:
+            return self._with_mode(acted, None)
 
         trips = getattr(self._pipeline, "trips", None)
         if cleaned.lower().startswith("/trip") and trips is None:

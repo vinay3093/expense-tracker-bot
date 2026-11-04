@@ -156,6 +156,18 @@ TRANSACTIONS_COLUMNS: tuple[TransactionColumn, ...] = (
         type=ColumnType.TEXT,
         description='Trip name ("Cali 2026") or blank for everyday spend.',
     ),
+    TransactionColumn(
+        key="expense_no",
+        header="Expense",
+        type=ColumnType.NUMBER,
+        description="Spoken expense number. Assigned once and never reused.",
+    ),
+    TransactionColumn(
+        key="expense_uid",
+        header="Expense ID",
+        type=ColumnType.TEXT,
+        description="Hidden permanent id for a future database.",
+    ),
 )
 
 
@@ -207,6 +219,8 @@ def transaction_row_to_cells(row: TransactionRow) -> list[Any]:
         row.trace_id or "",
         ts,
         row.trip or "",
+        row.expense_no if row.expense_no is not None else "",
+        row.expense_uid or "",
     ]
 
 
@@ -427,7 +441,7 @@ def _apply_transactions_formatting(ws: WorksheetHandle, sheet_format: SheetForma
         if c.type is not ColumnType.NUMBER:
             continue
         letter = col_for(c.key)
-        col_number_format = "0" if c.key == "year" else fmt.number_format
+        col_number_format = "0" if c.key in {"year", "expense_no"} else fmt.number_format
         ws.format_range(
             f"{letter}2:{letter}",
             CellFormat(number_format=col_number_format),

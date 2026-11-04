@@ -187,6 +187,9 @@ class ExpenseLogger:
 
         try:
             self._ledger.append([row])
+            written = getattr(self._ledger, "last_appended", None)
+            if written:
+                row = written[-1]
         except LedgerError as exc:
             raise ExpenseLogError(
                 f"failed to append to {self._ledger.transactions_label!r}: {exc}",
