@@ -322,10 +322,15 @@ class MessageProcessor:
         trips = getattr(self._pipeline, "trips", None)
         buttons: tuple[tuple[str, str], ...] = ()
         if trips is not None:
-            line = trips.mode_line()
-            if line not in text:
-                text = f"{text}\n{line}"
-            buttons = tuple(trips.mode_buttons())
+            try:
+                line = trips.mode_line()
+                if line not in text:
+                    text = f"{text}\n{line}"
+                buttons = tuple(trips.mode_buttons())
+            except Exception:
+                # The expense is already saved by the time we get here.
+                # A failed button refresh must not ask the user to send it again.
+                _log.warning("trip buttons failed after the reply was ready", exc_info=True)
         return ProcessedMessage(reply_text=text, chat_turn=turn, buttons=buttons)
 
 

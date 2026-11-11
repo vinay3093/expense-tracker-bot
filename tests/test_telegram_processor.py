@@ -69,6 +69,29 @@ def _processor(*, allowed_ids: set[int], reply: str = "ok!", raises=None) -> tup
 # ─── Auth gating ───────────────────────────────────────────────────────
 
 
+def test_saved_reply_survives_a_button_refresh_failure() -> None:
+    processor, pipeline = _processor(allowed_ids={42}, reply="Logged coffee $4.")
+
+    class _BrokenTrips:
+        def set_override(self, force):
+            del force
+
+        def handle(self, text):
+            del text
+            return None
+
+        def mode_line(self):
+            raise RuntimeError("SheetsAPIError")
+
+        def mode_buttons(self):
+            raise RuntimeError("SheetsAPIError")
+
+    pipeline.trips = _BrokenTrips()
+    out = processor.process(user_id=42, text="hello")
+    assert out.reply_text.startswith("Logged coffee")
+    assert out.buttons == ()
+
+
 def test_processor_rejects_unauthorized_user_without_calling_pipeline() -> None:
     """Unauthorized users must NOT trigger an LLM call (cost + safety)."""
     processor, pipeline = _processor(allowed_ids={42})

@@ -127,6 +127,7 @@ class TripService:
         self._master = master
         self._books = books or factory_for(master)
         self._override: str | None = None
+        self._registry: list[Trip] | None = None
 
     def handle(self, text: str) -> str | None:
         """Return a reply when ``text`` is a trip command, else None."""
@@ -473,6 +474,11 @@ class TripService:
         return ws
 
     def _load(self) -> list[Trip]:
+        if self._registry is None:
+            self._registry = self._read_registry()
+        return list(self._registry)
+
+    def _read_registry(self) -> list[Trip]:
         if not self._master.has_worksheet(_TRIPS_TAB):
             return []
         values = self._ensure_registry().get_values("A2:J")
@@ -539,9 +545,11 @@ class TripService:
             trip.trip_id, trip.name, trip.start, trip.end, trip.budget,
             trip.currency, trip.status, trip.spreadsheet_id, trip.url, trip.tab,
         ]])
+        self._registry = None
 
     def _set_status(self, trip: Trip, status: str) -> None:
         self._ensure_registry().update_values(f"G{trip.row_index}", [[status]])
+        self._registry = None
 
     def _new_id(self, name: str, start: str) -> str:
         slug = re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-") or "TRIP"

@@ -15,6 +15,26 @@ def _service() -> tuple[TripService, FakeSheetsBackend, InMemoryWorkbookFactory]
     return TripService(master, books), master, books
 
 
+def test_trip_list_is_read_once_until_status_changes():
+    trips, _, _ = _service()
+    trips.handle("make a California trip from 2026-10-24 to 2026-11-02 budget 3500")
+    calls = {"n": 0}
+    original = trips._read_registry
+
+    def counted():
+        calls["n"] += 1
+        return original()
+
+    trips._read_registry = counted
+    trips._registry = None
+    assert trips.mode_line() == "Mode: California"
+    trips.mode_buttons()
+    assert calls["n"] == 1
+    trips.use_daily()
+    assert trips.mode_line() == "Mode: Daily"
+    assert calls["n"] == 2
+
+
 def test_create_lists_and_closes_a_trip():
     trips, _, books = _service()
     reply = trips.handle("/trip create Cali 2026-11-01 2026-11-11 2500")

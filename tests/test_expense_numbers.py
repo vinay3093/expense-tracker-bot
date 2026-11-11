@@ -39,6 +39,27 @@ def _ledger():
     return backend, fmt
 
 
+def test_later_expense_writes_one_row():
+    backend, fmt = _ledger()
+    sync_append(backend, fmt, [_row(1, note="first", stamp="2026-11-01T09:00:00")])
+    ws = backend.get_worksheet("Transactions")
+    calls: list[tuple[str, int]] = []
+    original = ws.update_values
+
+    def spy(range_a1, values):
+        calls.append((range_a1, len(values)))
+        return original(range_a1, values)
+
+    ws.update_values = spy
+    _, indexes = sync_append(backend, fmt, [_row(4, note="second", stamp="2026-11-04T09:00:00")])
+    assert indexes == [3]
+    assert calls == [(calls[0][0], 1)]
+    assert calls[0][0].startswith("A3:")
+    rows = load_expenses(backend, fmt)
+    assert [item.note for item in rows] == ["first", "second"]
+    assert [item.expense_no for item in rows] == [1, 2]
+
+
 def test_earlier_date_logged_later_gets_the_next_number_and_sorts_up():
     backend, fmt = _ledger()
     sync_append(backend, fmt, [_row(4, note="later day", stamp="2026-11-04T09:00:00")])

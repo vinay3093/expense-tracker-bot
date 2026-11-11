@@ -22,6 +22,8 @@ unwrapped — callers should ONLY have to catch our typed
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -112,6 +114,27 @@ def open_spreadsheet(
     )
 
 
+def _retryable(exc: Any) -> bool:
+    """Google 429s and brief 5xx responses are worth one more try."""
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if code in {429, 500, 502, 503}:
+        return True
+    text = str(exc).lower()
+    return any(token in text for token in ("429", "quota", "500", "503", "unavailable"))
+
+
+def _call_sheets(gspread_mod: Any, operation: Callable[[], Any]) -> Any:
+    """Run one Sheets call, retrying once when Google is busy."""
+    try:
+        return operation()
+    except gspread_mod.exceptions.APIError as exc:
+        if not _retryable(exc):
+            raise
+        time.sleep(2)
+        return operation()
+
+
 def _translate_api_error(exc: Any, *, default: type[Exception]) -> Exception:
     """Best-effort translate a gspread APIError to our typed hierarchy."""
     msg = str(exc)
@@ -163,16 +186,19 @@ class GspreadWorksheet:
     # ─── Read / write ───────────────────────────────────────────────────
     def get_values(self, range_a1: str) -> list[list[Any]]:
         try:
-            return self._ws.get(range_a1)
+            return _call_sheets(self._gspread, lambda: self._ws.get(range_a1))
         except self._gspread.exceptions.APIError as exc:
             raise _translate_api_error(exc, default=SheetsAPIError) from exc
 
     def update_values(self, range_a1: str, values: list[list[Any]]) -> None:
         try:
-            self._ws.update(
-                range_name=range_a1,
-                values=values,
-                value_input_option="USER_ENTERED",
+            _call_sheets(
+                self._gspread,
+                lambda: self._ws.update(
+                    range_name=range_a1,
+                    values=values,
+                    value_input_option="USER_ENTERED",
+                ),
             )
         except self._gspread.exceptions.APIError as exc:
             raise _translate_api_error(exc, default=SheetsAPIError) from exc
@@ -181,7 +207,10 @@ class GspreadWorksheet:
         if not values:
             return
         try:
-            self._ws.append_rows(values, value_input_option="USER_ENTERED")
+            _call_sheets(
+                self._gspread,
+                lambda: self._ws.append_rows(values, value_input_option="USER_ENTERED"),
+            )
         except self._gspread.exceptions.APIError as exc:
             raise _translate_api_error(exc, default=SheetsAPIError) from exc
 

@@ -81,6 +81,8 @@ class SheetsLedgerBackend:
     ) -> None:
         self._backend = backend
         self._format = sheet_format
+        self._storage_ready = False
+        self._ready_periods: set[tuple[int, int]] = set()
 
     @property
     def transactions_label(self) -> str:
@@ -126,8 +128,15 @@ class SheetsLedgerBackend:
         )
 
     def init_storage(self) -> None:
-        """Create the master ``Transactions`` tab if missing.  Idempotent."""
+        """Create the master ``Transactions`` tab if missing.  Idempotent.
+
+        The first call in this process prepares the tab. Later expenses
+        skip that round trip; the header is not reformatted each time.
+        """
+        if self._storage_ready:
+            return
         init_transactions_tab(self._backend, self._format)
+        self._storage_ready = True
 
     def ensure_period(
         self,
@@ -150,6 +159,8 @@ class SheetsLedgerBackend:
             month_num=month,
             year=year,
         )
+        if (year, month) in self._ready_periods:
+            return PeriodInfo(name=sheet_name, created=False)
         existed = self._backend.has_worksheet(sheet_name)
         ensure_month_tab(
             self._backend,
@@ -158,6 +169,7 @@ class SheetsLedgerBackend:
             month=month,
             categories=list(categories),
         )
+        self._ready_periods.add((year, month))
         return PeriodInfo(name=sheet_name, created=not existed)
 
     # ─── Write side ────────────────────────────────────────────────────

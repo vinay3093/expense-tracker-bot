@@ -157,10 +157,12 @@ def test_init_creates_tab_with_header_and_formatting():
 def test_init_idempotent_when_header_matches():
     b = FakeSheetsBackend()
     fmt = SheetFormat.from_dict({})
-    init_transactions_tab(b, fmt)
-    # Second call should not raise / not create a duplicate.
+    ws = init_transactions_tab(b, fmt)
+    formatted = len(ws.format_calls())
+    # Second call should not raise, duplicate the tab, or reformat it.
     init_transactions_tab(b, fmt)
     assert sum(1 for w in b.list_worksheets() if w.title == "Transactions") == 1
+    assert len(ws.format_calls()) == formatted
 
 
 def test_init_rejects_existing_tab_with_wrong_headers():

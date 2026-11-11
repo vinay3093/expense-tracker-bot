@@ -27,6 +27,7 @@ _NO = index_for("expense_no")
 _UID = index_for("expense_uid")
 _TS = index_for("timestamp")
 _COLS = len(TRANSACTIONS_COLUMNS)
+_HEADER_READY = "_transactions_header_ready"
 
 
 @dataclass(frozen=True)
@@ -50,12 +51,35 @@ def sync_append(
     sheet_format: SheetFormat,
     new_rows: list[TransactionRow],
 ) -> tuple[list[TransactionRow], list[int]]:
-    """Give new rows the next numbers, backfill blanks, and sort by date."""
+    """Give new rows the next numbers, backfill blanks, and sort by date.
+
+    A row that belongs at the bottom is written by itself. Rewriting the
+    whole tab is reserved for a backdated row, or a sheet that still has
+    blank numbers.
+    """
     records = _ensure(backend, sheet_format)
+    placed, fresh = _numbered(records, new_rows)
+    if _fits_at_end(records, fresh):
+        start = (records[-1].sheet_row + 1) if records else 2
+        ordered = sorted(fresh, key=_sort_key)
+        _put_rows(backend, sheet_format, start, ordered)
+        by_uid = {item.expense_uid: start + offset for offset, item in enumerate(ordered)}
+        return placed, [by_uid[row.expense_uid or ""] for row in placed]
+    records.extend(fresh)
+    ordered = sorted(records, key=_sort_key)
+    _write(backend, sheet_format, ordered)
+    by_uid = {item.expense_uid: offset + 2 for offset, item in enumerate(ordered)}
+    return placed, [by_uid[row.expense_uid or ""] for row in placed]
+
+
+def _numbered(
+    records: list[StoredExpense],
+    new_rows: list[TransactionRow],
+) -> tuple[list[TransactionRow], list[StoredExpense]]:
     used = {item.expense_no for item in records}
     nxt = max(used, default=0) + 1
     placed: list[TransactionRow] = []
-    placed_uids: list[str] = []
+    fresh: list[StoredExpense] = []
     for row in new_rows:
         number = row.expense_no if row.expense_no is not None else nxt
         while number in used:
@@ -82,18 +106,36 @@ def sync_append(
             expense_no=number,
             expense_uid=uid,
         )
-        records.append(_from_cells(len(records) + 2, transaction_row_to_cells(ready)))
         placed.append(ready)
-        placed_uids.append(uid)
-    _write(backend, sheet_format, records)
-    saved = load_expenses(backend, sheet_format)
-    indexes = [
-        item.sheet_row
-        for uid in placed_uids
-        for item in saved
-        if item.expense_uid == uid
-    ]
-    return placed, indexes
+        fresh.append(_from_cells(0, transaction_row_to_cells(ready)))
+    return placed, fresh
+
+
+def _fits_at_end(records: list[StoredExpense], fresh: list[StoredExpense]) -> bool:
+    """True when the new rows can sit under the last row without a rewrite."""
+    if any(item.sheet_row != index + 2 for index, item in enumerate(records)):
+        return False
+    if not records:
+        return True
+    last = _sort_key(records[-1])
+    return all(_sort_key(item) >= last for item in fresh)
+
+
+def _put_rows(
+    backend: SheetsBackend,
+    sheet_format: SheetFormat,
+    start_row: int,
+    records: list[StoredExpense],
+) -> None:
+    if not records:
+        return
+    ws = backend.get_worksheet(sheet_format.transactions.sheet_name)
+    end = col_index_to_letter(_COLS - 1)
+    last = start_row + len(records) - 1
+    ws.update_values(
+        f"A{start_row}:{end}{last}",
+        [list(item.cells) for item in records],
+    )
 
 
 def load_expenses(
@@ -213,23 +255,29 @@ def _write(
 
 
 def _ready(backend: SheetsBackend, sheet_format: SheetFormat) -> None:
-    """Create or widen the header. Skip formatting once the header is current."""
+    """Create or widen the header. Skip the check once this connection has seen it."""
+    if getattr(backend, _HEADER_READY, False):
+        return
     name = sheet_format.transactions.sheet_name
     expected = header_row()
     if not backend.has_worksheet(name):
         init_transactions_tab(backend, sheet_format)
+        setattr(backend, _HEADER_READY, True)
         return
     ws = backend.get_worksheet(name)
     end = col_index_to_letter(_COLS - 1)
     header = ws.get_values(f"A1:{end}1")
     actual = [cell for cell in (header[0] if header else []) if cell not in ("", None)]
     if actual == expected:
+        setattr(backend, _HEADER_READY, True)
         return
     if actual and actual == expected[: len(actual)]:
         init_transactions_tab(backend, sheet_format)
+        setattr(backend, _HEADER_READY, True)
         return
     if not actual:
         init_transactions_tab(backend, sheet_format)
+        setattr(backend, _HEADER_READY, True)
 
 
 def _from_cells(sheet_row: int, cells: list[Any]) -> StoredExpense:

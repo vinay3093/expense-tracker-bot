@@ -234,8 +234,9 @@ def init_transactions_tab(
 ) -> WorksheetHandle:
     """Create the Transactions tab if it doesn't exist; format it in place.
 
-    Idempotent: if the tab already exists with the same header row, just
-    re-applies formatting (cheap). If the header row is wrong, raises.
+    Idempotent: a tab that already has the current header is left alone.
+    Formatting on every expense was a large share of the Sheets quota.
+    A short header is widened and formatted once. A wrong header raises.
     """
     from .exceptions import SheetFormatError
 
@@ -250,6 +251,8 @@ def init_transactions_tab(
         # returns the header padded out to the worksheet's col_count.
         actual_trimmed = [c for c in actual if c not in ("", None)]
         expected = header_row()
+        if actual_trimmed == expected:
+            return ws
         if actual_trimmed and actual_trimmed == expected[: len(actual_trimmed)]:
             # Older ledger missing trailing columns: extend the header
             # in place. Existing rows read the new cells as blank.
