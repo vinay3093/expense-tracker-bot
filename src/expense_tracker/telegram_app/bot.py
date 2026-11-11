@@ -81,6 +81,8 @@ _WELCOME_TEXT = (
     "  switch to California 2026\n"
     "  end the California trip\n"
     "  /undo and /edit still change the latest row\n\n"
+    "A category total arrives on its own every Sunday at 6pm: "
+    "that week, and from the second Sunday the month so far as well.\n\n"
     "See how you're tracking:\n"
     "  /summary               last 7 days vs the 7 before that\n"
     "  /summary month         this month so far vs last month thru same day\n"

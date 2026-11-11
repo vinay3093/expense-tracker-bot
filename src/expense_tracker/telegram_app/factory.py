@@ -173,6 +173,11 @@ def build_application(
     )
 
     app = ApplicationBuilder().token(token).build()
+    app.bot_data["weekly_digest"] = {
+        "retriever": chat_pipeline.retriever,
+        "timezone": cfg.TIMEZONE,
+        "user_ids": sorted(parse_allowed_users(cfg.TELEGRAM_ALLOWED_USERS)),
+    }
 
     # Global error handler — if any handler raises (e.g. Sheets 429,
     # Groq timeout, FX-cache write failure), PTB calls this BEFORE
@@ -287,11 +292,15 @@ def run_polling(
             "PTB bootstrap: updater is polling Telegram — bot is now LIVE. "
             "DM the bot from any allow-listed Telegram account.",
         )
+        digest = asyncio.create_task(_sunday_digest(app))
         # Block the coroutine forever; the platform (HF / Docker /
         # k8s) will SIGTERM us when it wants the container to stop,
         # which propagates through asyncio.run() → KeyboardInterrupt
         # → finally-block in run_polling() below.
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            digest.cancel()
 
     try:
         asyncio.run(_serve_forever())
@@ -305,6 +314,58 @@ def run_polling(
             asyncio.run(_graceful_stop(app))
         except Exception as exc:
             _log.warning("PTB shutdown raised %s — container exiting anyway.", exc)
+
+
+async def _sunday_digest(app: Application) -> None:
+    """Send the category totals every Sunday at 6pm in the user's timezone."""
+    import asyncio
+
+    from ..extractor.schemas import Intent, RetrievalQuery, TimeRange
+    from ..pipeline.weekly import (
+        build_digest,
+        digest_is_due,
+        digest_windows,
+        local_now,
+        next_digest_pause,
+    )
+
+    job = app.bot_data.get("weekly_digest") or {}
+    retriever = job.get("retriever")
+    user_ids = list(job.get("user_ids") or [])
+    timezone = str(job.get("timezone") or "UTC")
+    if retriever is None or not user_ids:
+        _log.info("Sunday digest is off — no ledger or no allowed users.")
+        return
+
+    sent_on = None
+    while True:
+        failed = False
+        try:
+            sunday = digest_is_due(local_now(timezone), sent_on)
+            if sunday is not None:
+                _, week_end, month_start = digest_windows(sunday)
+                answer = retriever.answer(
+                    RetrievalQuery(
+                        intent=Intent.QUERY_PERIOD_TOTAL,
+                        time_range=TimeRange(
+                            start=month_start,
+                            end=week_end,
+                            label="month so far",
+                        ),
+                    )
+                )
+                text = build_digest(sunday, answer.matched_rows)
+                for user_id in user_ids:
+                    await app.bot.send_message(chat_id=user_id, text=text)
+                sent_on = sunday
+                _log.info("Sunday digest sent for %s", sunday.isoformat())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed = True
+            _log.exception("Sunday digest failed; it will try again.")
+        pause = 15 * 60 if failed else next_digest_pause(local_now(timezone), sent_on=sent_on)
+        await asyncio.sleep(pause)
 
 
 async def _graceful_stop(app: Application) -> None:
